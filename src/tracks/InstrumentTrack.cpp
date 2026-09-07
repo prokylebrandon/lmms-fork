@@ -26,6 +26,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
+#include <QTimer>
 
 #include "AudioEngine.h"
 #include "AutomationClip.h"
@@ -1042,13 +1043,24 @@ void InstrumentTrack::loadTrackSpecificSettings( const QDomElement & thisElement
 				// Clips haven't been loaded yet at this point (Track::loadTrack()
 				// restores them after loadTrackSpecificSettings() returns), so we
 				// can't validate the fingerprint against them yet. Stash what was
-				// saved and finalize it lazily -- see finalizeLoadedFreezeState().
+				// saved; finalizeLoadedFreezeState() is scheduled below to run on
+				// the next event-loop iteration, once this whole load/clone call
+				// stack (Track::create() and everything it calls) has fully
+				// unwound, rather than being triggered synchronously from within
+				// it -- doing file I/O, Sample construction, and audio-engine
+				// calls synchronously from deep inside a signal handler that
+				// itself fires mid-construction is exactly the kind of
+				// reentrancy that's fragile to reason about and easy to get
+				// wrong, so this sidesteps that category of bug entirely rather
+				// than trying to make the synchronous path provably safe.
 				const QDomElement freezeElem = node.toElement();
 				m_pendingLoadedFreeze = true;
 				m_pendingLoadedFreezeFrozen = freezeElem.attribute("frozen", "0").toInt() != 0;
 				m_pendingLoadedFreezeStale = freezeElem.attribute("stale", "0").toInt() != 0;
 				m_frozenSamplePath = freezeElem.attribute("path");
 				m_frozenSourceFingerprint = QByteArray::fromHex(freezeElem.attribute("fingerprint").toLatin1());
+
+				QTimer::singleShot(0, this, &InstrumentTrack::finalizeLoadedFreezeState);
 			}
 			// compat code - if node-name doesn't match any known
 			// one, we assume that it is an instrument-plugin
@@ -1259,6 +1271,14 @@ void InstrumentTrack::finalizeLoadedFreezeState()
 // Connect a single clip's change signals to markStale(). Called for every
 // clip that already exists (from hookClipsForStaleTracking(), e.g. after
 // project load) and for every clip added afterwards (via the clipAdded signal).
+//
+// Deliberately does NOT try to finalize any pending loaded freeze state
+// here -- that used to happen eagerly on every clip arrival, which meant it
+// could run synchronously from inside Track::create()'s clip-loading loop,
+// nested inside the very call stack that constructed this object. It's now
+// scheduled once, deterministically, via QTimer::singleShot(0, ...) when the
+// <freeze> element is first parsed (see loadTrackSpecificSettings()), which
+// runs after that call stack has fully unwound instead.
 void InstrumentTrack::connectClipToStaleTracking(Clip* clip)
 {
 	if (clip == nullptr)
@@ -1272,12 +1292,6 @@ void InstrumentTrack::connectClipToStaleTracking(Clip* clip)
 	connect(clip, &Clip::dataChanged, this, &InstrumentTrack::markStale);
 	connect(clip, &Clip::lengthChanged, this, &InstrumentTrack::markStale);
 	connect(clip, &Clip::positionChanged, this, &InstrumentTrack::markStale);
-
-	// If a project load left freeze state pending validation, each clip
-	// arriving afterward is a chance to finalize it now that (more of) the
-	// track's clips exist; finalize is cheap and idempotent so this is safe
-	// to call on every clip rather than trying to detect "the last one".
-	finalizeLoadedFreezeState();
 }
 
 
@@ -1313,29 +1327,47 @@ QString InstrumentTrack::freezeCacheDir()
 
 
 // Fingerprint of everything that would make a cached render stale: the
-// instrument's state, its effects chain, and every clip on this track,
-// serialized the same way the project file would serialize them. This
-// intentionally reuses saveTrackSpecificSettings()/Clip::saveState() rather
-// than hand-picking individual models, so it can't silently miss a plugin
-// parameter or clip edit that a more targeted signal-based check would.
+// instrument's state, its effects chain, key/pitch settings, and every clip
+// on this track.
 //
-// Passes presetMode=true to saveTrackSpecificSettings() purely to suppress
-// the <freeze> block it appends in project-save mode -- freeze state is not
-// part of what would make a render stale, and including it here would make
-// the fingerprint depend on the very state it's used to validate. Nothing
-// else differs between preset-mode and project-mode output for the models
-// this fingerprint cares about (instrument, effects, MIDI CC, key range,
-// pitch, microtuner); the MIDI port connection is the only other thing
-// preset-mode omits, and MIDI routing doesn't affect rendered audio.
+// Deliberately does NOT call saveTrackSpecificSettings() -- that function
+// has a real side effect (it temporarily toggles MIDI auto-assignment state
+// around saving the MIDI port; see the autoAssignMidiDevice() calls inside
+// it) that makes it unsafe to call from a possibly-reentrant context like
+// this one. This function can run from inside Track::create()'s
+// clip-loading loop (e.g. while cloning a frozen track), nested inside the
+// very call stack that constructed this object, so it serializes exactly
+// the pieces that would make a render stale, directly and without touching
+// MIDI routing state or any other side effect. Instrument identity changes
+// (swapping to a different plugin) are already caught separately via the
+// instrumentChanged() -> markStale() connection, so this only needs to
+// capture parameter changes within the current instrument/effects/clips.
 QByteArray InstrumentTrack::freezeSourceFingerprint() const
 {
+	auto* self = const_cast<InstrumentTrack*>(this);
+
 	QDomDocument doc;
 	QDomElement root = doc.createElement("frozenSourceSnapshot");
 	doc.appendChild(root);
 
-	QDomElement trackElem = doc.createElement(nodeName());
-	root.appendChild(trackElem);
-	const_cast<InstrumentTrack*>(this)->saveTrackSpecificSettings(doc, trackElem, /*presetMode=*/true);
+	if (m_instrument != nullptr)
+	{
+		QDomElement instrumentElem = doc.createElement("instrument");
+		instrumentElem.setAttribute("name", m_instrument->descriptor()->name);
+		self->m_instrument->saveState(doc, instrumentElem);
+		root.appendChild(instrumentElem);
+	}
+	self->m_audioBusHandle.effects()->saveState(doc, root);
+	self->m_soundShaping.saveState(doc, root);
+	self->m_noteStacking.saveState(doc, root);
+	self->m_arpeggio.saveState(doc, root);
+	self->m_volumeModel.saveSettings(doc, root, "vol");
+	self->m_panningModel.saveSettings(doc, root, "pan");
+	self->m_pitchModel.saveSettings(doc, root, "pitch");
+	self->m_pitchRangeModel.saveSettings(doc, root, "pitchrange");
+	self->m_baseNoteModel.saveSettings(doc, root, "basenote");
+	self->m_firstKeyModel.saveSettings(doc, root, "firstkey");
+	self->m_lastKeyModel.saveSettings(doc, root, "lastkey");
 
 	for (const auto& clip : getClips())
 	{
