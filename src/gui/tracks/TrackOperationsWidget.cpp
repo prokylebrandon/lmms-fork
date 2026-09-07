@@ -106,30 +106,6 @@ TrackOperationsWidget::TrackOperationsWidget( TrackView * parent ) :
 	operationsLayout->addWidget(m_muteBtn);
 	operationsLayout->addWidget(m_soloBtn);
 
-	if (auto instrumentTrackView = dynamic_cast<InstrumentTrackView*>(m_trackView))
-	{
-		auto* instrumentTrack = instrumentTrackView->model();
-
-		m_freezeBtn = new QPushButton(operationsWidget);
-		m_freezeBtn->setCheckable(true);
-		m_freezeBtn->setFocusPolicy(Qt::NoFocus);
-		m_freezeBtn->setCursor(Qt::PointingHandCursor);
-		m_freezeBtn->setObjectName("btn-freeze");
-		m_freezeBtn->setText(tr("F"));
-		m_freezeBtn->setToolTip(tr("Freeze track: render this track's audio "
-			"once and play back the render instead of the live instrument, "
-			"to save CPU. The instrument, its clips, and automation are kept "
-			"untouched underneath and are restored exactly by unfreezing."));
-
-		connect(m_freezeBtn, &QPushButton::clicked, this, &TrackOperationsWidget::toggleFreeze);
-		connect(instrumentTrack, &InstrumentTrack::frozenStateChanged,
-			this, &TrackOperationsWidget::updateFreezeButton);
-
-		updateFreezeButton();
-
-		operationsLayout->addWidget(m_freezeBtn);
-	}
-
 	layout->addWidget(operationsWidget, 0, Qt::AlignTop | Qt::AlignLeading);
 
 	connect( this, SIGNAL(trackRemovalScheduled(lmms::gui::TrackView*)),
@@ -231,10 +207,12 @@ void TrackOperationsWidget::clearTrack()
 }
 
 
-// Toggle freeze state for the InstrumentTrack this widget belongs to.
-// Freezing kicks off an asynchronous render (see InstrumentTrack::freeze());
-// the button reflects the eventual result via updateFreezeButton(), which is
-// connected to InstrumentTrack::frozenStateChanged().
+// Toggle freeze state for the InstrumentTrack this widget belongs to,
+// triggered from the "Freeze track"/"Unfreeze track" entry in the gear
+// menu (see updateMenu()). Freezing kicks off an asynchronous render (see
+// InstrumentTrack::freeze()); the menu text reflects the eventual result
+// next time it's opened, since updateMenu() re-reads current state on
+// every aboutToShow().
 void TrackOperationsWidget::toggleFreeze()
 {
 	auto instrumentTrackView = dynamic_cast<InstrumentTrackView*>(m_trackView);
@@ -251,54 +229,6 @@ void TrackOperationsWidget::toggleFreeze()
 	else
 	{
 		instrumentTrack->freeze();
-	}
-	updateFreezeButton();
-}
-
-
-void TrackOperationsWidget::updateFreezeButton()
-{
-	if (m_freezeBtn == nullptr)
-	{
-		return;
-	}
-	auto instrumentTrackView = dynamic_cast<InstrumentTrackView*>(m_trackView);
-	if (instrumentTrackView == nullptr)
-	{
-		return;
-	}
-	auto* instrumentTrack = instrumentTrackView->model();
-
-	if (instrumentTrack->isFreezing())
-	{
-		m_freezeBtn->setChecked(true);
-		m_freezeBtn->setEnabled(false);
-		m_freezeBtn->setText(tr("F")+QLatin1String("\u2026"));
-		m_freezeBtn->setToolTip(tr("Rendering freeze..."));
-	}
-	else if (instrumentTrack->isFrozen())
-	{
-		m_freezeBtn->setChecked(true);
-		m_freezeBtn->setEnabled(true);
-		m_freezeBtn->setToolTip(tr("Frozen -- click to unfreeze and resume live playback"));
-	}
-	else if (instrumentTrack->isStale())
-	{
-		m_freezeBtn->setChecked(true);
-		m_freezeBtn->setEnabled(true);
-		m_freezeBtn->setText(tr("F!"));
-		m_freezeBtn->setToolTip(tr("Frozen render is out of date -- click to unfreeze, "
-			"or re-freeze to update the cached render"));
-	}
-	else
-	{
-		m_freezeBtn->setChecked(false);
-		m_freezeBtn->setEnabled(true);
-		m_freezeBtn->setText(tr("F"));
-		m_freezeBtn->setToolTip(tr("Freeze track: render this track's audio "
-			"once and play back the render instead of the live instrument, "
-			"to save CPU. The instrument, its clips, and automation are kept "
-			"untouched underneath and are restored exactly by unfreezing."));
 	}
 }
 
@@ -387,8 +317,38 @@ void TrackOperationsWidget::updateMenu()
 
 	if (auto trackView = dynamic_cast<InstrumentTrackView*>(m_trackView))
 	{
+		auto* instrumentTrack = trackView->model();
+
 		toMenu->addSeparator();
 		toMenu->addMenu(trackView->midiMenu());
+
+		QAction* freezeAction;
+		if (instrumentTrack->isFreezing())
+		{
+			freezeAction = toMenu->addAction(tr("Freezing..."), this, SLOT(toggleFreeze()));
+			freezeAction->setEnabled(false);
+		}
+		else if (instrumentTrack->isFrozen())
+		{
+			freezeAction = toMenu->addAction(tr("Unfreeze track"), this, SLOT(toggleFreeze()));
+			freezeAction->setToolTip(tr("Discard the cached render and resume live playback. "
+				"The instrument, its clips, and automation were never touched."));
+		}
+		else if (instrumentTrack->isStale())
+		{
+			freezeAction = toMenu->addAction(tr("Re-freeze track (render is outdated)"), this, SLOT(toggleFreeze()));
+			freezeAction->setToolTip(tr("The cached render no longer matches this track's "
+				"instrument, effects, or clips. Playback has already fallen back to live; "
+				"freeze again to update the cached render, or use Unfreeze to clear it."));
+		}
+		else
+		{
+			freezeAction = toMenu->addAction(tr("Freeze track"), this, SLOT(toggleFreeze()));
+			freezeAction->setToolTip(tr("Render this track's audio once and play back the "
+				"render instead of the live instrument, to save CPU. The instrument, its "
+				"clips, and automation are kept untouched underneath and are restored "
+				"exactly by unfreezing."));
+		}
 	}
 	if( dynamic_cast<AutomationTrackView *>( m_trackView ) )
 	{
