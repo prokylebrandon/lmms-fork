@@ -27,6 +27,9 @@
 #define LMMS_INSTRUMENT_TRACK_H
 
 
+#include <atomic>
+#include <memory>
+
 #include "AudioBusHandle.h"
 #include "InstrumentFunctions.h"
 #include "InstrumentSoundShaping.h"
@@ -37,6 +40,7 @@
 #include "NotePlayHandle.h"
 #include "Piano.h"
 #include "Plugin.h"
+#include "Sample.h"
 #include "Track.h"
 
 
@@ -46,6 +50,8 @@ namespace lmms
 
 class Instrument;
 class DataFile;
+class SamplePlayHandle;
+class RenderManager;
 
 namespace gui
 {
@@ -242,12 +248,48 @@ public:
 	//! Returns a non-owning pointer to the model for the knob at the given index in the track's MIDI CC rack
 	FloatModel* midiCCModel(int index) const { return m_midiCCModel[index].get(); }
 
+	// -- Freeze / unfreeze -----------------------------------------------
+	//! True while this track is rendering its freeze cache in the background.
+	bool isFreezing() const { return m_freezeRenderPending; }
+
+	//! True if the track is currently playing back from its frozen render
+	//! instead of the live instrument. Always false while stale.
+	bool isFrozen() const { return m_frozenModel.value() && !m_stale; }
+
+	//! True if the track has a frozen render on disk that is out of date
+	//! with respect to the instrument, effects, or clips. A stale track is
+	//! never played back from cache; it falls back to live playback until
+	//! it is re-frozen or unfrozen.
+	bool isStale() const { return m_stale; }
+
+	BoolModel* frozenModel() { return &m_frozenModel; }
+
+	//! Kick off an asynchronous render of this track's full output (instrument
+	//! + effects + automation, muting every other track) to a project-local
+	//! cache file. On completion, playback switches to the cached audio and
+	//! the instrument/effects controls should be treated as read-only by the UI.
+	//! No-op if a freeze render is already pending.
+	void freeze();
+
+	//! Immediately restore live playback. The underlying instrument, its
+	//! clips, and all automation were never touched, so this never re-renders
+	//! anything and cannot lose data. The cache file on disk (if any) is left
+	//! alone so re-freezing later is cheap, but is no longer used for playback.
+	void unfreeze();
+
+	//! Path of the cached render, or an empty string if never frozen.
+	const QString& frozenSamplePath() const { return m_frozenSamplePath; }
+
 signals:
 	void instrumentChanged();
 	void midiNoteOn( const lmms::Note& );
 	void midiNoteOff( const lmms::Note& );
 	void newNote();
 	void endNote();
+
+	//! Emitted when freeze()/unfreeze() completes or staleness changes, so
+	//! views can update icons/tooltips and grey out editor controls.
+	void frozenStateChanged();
 
 protected:
 	QString nodeName() const override
@@ -266,8 +308,50 @@ protected slots:
 	void updateMixerChannel();
 
 
+private slots:
+	// Freeze support
+	void onFreezeRenderFinished();
+	void markStale();
+	void connectClipToStaleTracking(lmms::Clip* clip);
+	void updateFrozenPlayback();
+
 private:
 	void processCCEvent(int controller);
+
+	// -- Freeze support ---------------------------------------------------
+	//! Directory the freeze cache files for the current project live in.
+	static QString freezeCacheDir();
+	//! A cheap fingerprint of everything that would make a frozen render
+	//! stale if it changed: the serialized instrument+effects+clips XML.
+	QByteArray freezeSourceFingerprint() const;
+	void hookClipsForStaleTracking();
+	void beginFreezeRender();
+	void stopFrozenPlayback();
+	void finalizeLoadedFreezeState();
+
+	std::unique_ptr<RenderManager> m_freezeRenderManager;
+	bool m_freezeRenderPending = false;
+	QString m_pendingFreezeRenderPath;
+
+	BoolModel m_frozenModel;
+	bool m_stale = false;
+	QString m_frozenSamplePath;
+	QByteArray m_frozenSourceFingerprint;
+	std::unique_ptr<Sample> m_frozenSample;
+	class SamplePlayHandle* m_frozenPlayHandle = nullptr;
+
+	// Freeze state read from a project file, held here until clips (loaded
+	// after loadTrackSpecificSettings() returns) are available to validate
+	// the saved fingerprint against. See finalizeLoadedFreezeState().
+	bool m_pendingLoadedFreeze = false;
+	bool m_pendingLoadedFreezeFrozen = false;
+	bool m_pendingLoadedFreezeStale = false;
+
+	// Stable per-instance id used to name this track's freeze cache file
+	// uniquely without depending on the (non-unique, user-editable) track
+	// name or a pointer address.
+	const quint64 m_freezeCacheId;
+	static std::atomic<quint64> s_nextFreezeCacheId;
 
 	MidiPort m_midiPort;
 

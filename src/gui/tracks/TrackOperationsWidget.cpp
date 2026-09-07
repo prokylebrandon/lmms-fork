@@ -39,6 +39,7 @@
 #include "ConfigManager.h"
 #include "embed.h"
 #include "Engine.h"
+#include "InstrumentTrack.h"
 #include "InstrumentTrackView.h"
 #include "lmms_math.h"
 #include "KeyboardShortcuts.h"
@@ -104,6 +105,30 @@ TrackOperationsWidget::TrackOperationsWidget( TrackView * parent ) :
 	operationsLayout->addWidget(m_trackOps);
 	operationsLayout->addWidget(m_muteBtn);
 	operationsLayout->addWidget(m_soloBtn);
+
+	if (auto instrumentTrackView = dynamic_cast<InstrumentTrackView*>(m_trackView))
+	{
+		auto* instrumentTrack = instrumentTrackView->model();
+
+		m_freezeBtn = new QPushButton(operationsWidget);
+		m_freezeBtn->setCheckable(true);
+		m_freezeBtn->setFocusPolicy(Qt::NoFocus);
+		m_freezeBtn->setCursor(Qt::PointingHandCursor);
+		m_freezeBtn->setObjectName("btn-freeze");
+		m_freezeBtn->setText(tr("F"));
+		m_freezeBtn->setToolTip(tr("Freeze track: render this track's audio "
+			"once and play back the render instead of the live instrument, "
+			"to save CPU. The instrument, its clips, and automation are kept "
+			"untouched underneath and are restored exactly by unfreezing."));
+
+		connect(m_freezeBtn, &QPushButton::clicked, this, &TrackOperationsWidget::toggleFreeze);
+		connect(instrumentTrack, &InstrumentTrack::frozenStateChanged,
+			this, &TrackOperationsWidget::updateFreezeButton);
+
+		updateFreezeButton();
+
+		operationsLayout->addWidget(m_freezeBtn);
+	}
 
 	layout->addWidget(operationsWidget, 0, Qt::AlignTop | Qt::AlignLeading);
 
@@ -203,6 +228,78 @@ void TrackOperationsWidget::clearTrack()
 	t->lock();
 	t->deleteClips();
 	t->unlock();
+}
+
+
+// Toggle freeze state for the InstrumentTrack this widget belongs to.
+// Freezing kicks off an asynchronous render (see InstrumentTrack::freeze());
+// the button reflects the eventual result via updateFreezeButton(), which is
+// connected to InstrumentTrack::frozenStateChanged().
+void TrackOperationsWidget::toggleFreeze()
+{
+	auto instrumentTrackView = dynamic_cast<InstrumentTrackView*>(m_trackView);
+	if (instrumentTrackView == nullptr)
+	{
+		return;
+	}
+	auto* instrumentTrack = instrumentTrackView->model();
+
+	if (instrumentTrack->isFrozen() || instrumentTrack->isFreezing())
+	{
+		instrumentTrack->unfreeze();
+	}
+	else
+	{
+		instrumentTrack->freeze();
+	}
+	updateFreezeButton();
+}
+
+
+void TrackOperationsWidget::updateFreezeButton()
+{
+	if (m_freezeBtn == nullptr)
+	{
+		return;
+	}
+	auto instrumentTrackView = dynamic_cast<InstrumentTrackView*>(m_trackView);
+	if (instrumentTrackView == nullptr)
+	{
+		return;
+	}
+	auto* instrumentTrack = instrumentTrackView->model();
+
+	if (instrumentTrack->isFreezing())
+	{
+		m_freezeBtn->setChecked(true);
+		m_freezeBtn->setEnabled(false);
+		m_freezeBtn->setText(tr("F")+QLatin1String("\u2026"));
+		m_freezeBtn->setToolTip(tr("Rendering freeze..."));
+	}
+	else if (instrumentTrack->isFrozen())
+	{
+		m_freezeBtn->setChecked(true);
+		m_freezeBtn->setEnabled(true);
+		m_freezeBtn->setToolTip(tr("Frozen -- click to unfreeze and resume live playback"));
+	}
+	else if (instrumentTrack->isStale())
+	{
+		m_freezeBtn->setChecked(true);
+		m_freezeBtn->setEnabled(true);
+		m_freezeBtn->setText(tr("F!"));
+		m_freezeBtn->setToolTip(tr("Frozen render is out of date -- click to unfreeze, "
+			"or re-freeze to update the cached render"));
+	}
+	else
+	{
+		m_freezeBtn->setChecked(false);
+		m_freezeBtn->setEnabled(true);
+		m_freezeBtn->setText(tr("F"));
+		m_freezeBtn->setToolTip(tr("Freeze track: render this track's audio "
+			"once and play back the render instead of the live instrument, "
+			"to save CPU. The instrument, its clips, and automation are kept "
+			"untouched underneath and are restored exactly by unfreezing."));
+	}
 }
 
 

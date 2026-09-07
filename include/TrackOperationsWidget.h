@@ -62,6 +62,8 @@ private slots:
 	void recordingOn();
 	void recordingOff();
 	void clearTrack();
+	void toggleFreeze();
+	void updateFreezeButton();
 
 private:
 	TrackView * m_trackView;
@@ -70,6 +72,7 @@ private:
 	QPushButton * m_trackOps;
 	AutomatableButton* m_muteBtn;
 	AutomatableButton* m_soloBtn;
+	QPushButton* m_freezeBtn = nullptr;
 
 	friend class TrackView;
 

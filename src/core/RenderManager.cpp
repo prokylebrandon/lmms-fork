@@ -88,8 +88,10 @@ void RenderManager::renderNextTrack()
 	}
 }
 
-// Render the song into individual tracks
-void RenderManager::renderTracks()
+// Find all currently-unmuted instrument/sample tracks (across the song and
+// the pattern store) and remember them in m_unmuted so their mute state can
+// be restored later.
+void RenderManager::muteAllExcept(Track* keepUnmuted)
 {
 	const TrackContainer::TrackList& tl = Engine::getSong()->tracks();
 
@@ -119,11 +121,42 @@ void RenderManager::renderTracks()
 		}
 	}
 
+	// if requested, mute everything except keepUnmuted right away (used for
+	// single-track rendering, where we don't want to queue up other tracks)
+	if (keepUnmuted != nullptr)
+	{
+		for (const auto& tk : m_unmuted)
+		{
+			tk->setMuted(tk != keepUnmuted);
+		}
+	}
+}
+
+// Render the song into individual tracks
+void RenderManager::renderTracks()
+{
+	muteAllExcept(nullptr);
+
 	// copy the list of unmuted tracks into our rendering queue.
 	// we need to remember which tracks were unmuted to restore state at the end.
 	m_tracksToRender = m_unmuted;
 
 	renderNextTrack();
+}
+
+// Render exactly one track: mute every other currently-unmuted
+// instrument/sample track, render `track` alone to outputPath, then restore
+// mute state. Unlike renderTracks()/renderNextTrack(), this never queues
+// additional tracks and always writes to the caller-provided path.
+void RenderManager::renderSingleTrack(Track* track, const QString& outputPath)
+{
+	muteAllExcept(track);
+
+	// nothing left to queue -- renderNextTrack() would just clean up, so
+	// render this one track directly and let restoreMutedState() run when
+	// the renderer finishes (via renderNextTrack(), connected to finished()).
+	m_tracksToRender.clear();
+	render(outputPath);
 }
 
 // Render the song into a single track

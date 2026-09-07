@@ -72,6 +72,21 @@ public:
 		m_patternTrack = pt;
 	}
 
+	//! Associate this handle with a track so isFromTrack()/mute-checking work,
+	//! without requiring a SampleClip (used e.g. by InstrumentTrack's freeze
+	//! playback, which streams a whole-song render with no clip involved).
+	void setTrack(Track* track)
+	{
+		m_track = track;
+	}
+
+	//! Seek playback to start at a given frame within the sample, rather
+	//! than frame 0. Only valid before the first play() call.
+	void setStartFrame(f_cnt_t frameIndex)
+	{
+		m_state = Sample::PlaybackState(AudioResampler::Mode::Linear, frameIndex);
+	}
+
 private:
 	Sample::PlaybackState m_state;
 	f_cnt_t m_frame = 0;

@@ -343,11 +343,14 @@ void InstrumentTrackWindow::modelChanged()
 
 	m_track->disconnect( SIGNAL(nameChanged()), this );
 	m_track->disconnect( SIGNAL(instrumentChanged()), this );
+	m_track->disconnect( SIGNAL(frozenStateChanged()), this );
 
 	connect( m_track, SIGNAL(nameChanged()),
 			this, SLOT(updateName()));
 	connect( m_track, SIGNAL(instrumentChanged()),
 			this, SLOT(updateInstrumentView()));
+	connect( m_track, SIGNAL(frozenStateChanged()),
+			this, SLOT(updateFrozenState()));
 
 	m_volumeKnob->setModel( &m_track->m_volumeModel );
 	m_panningKnob->setModel( &m_track->m_panningModel );
@@ -396,6 +399,7 @@ void InstrumentTrackWindow::modelChanged()
 	m_tuningView->rangeImportCheckbox()->setModel(m_track->m_microtuner.keyRangeImportModel());
 	updateName();
 
+	updateFrozenState();
 	updateSubWindow();
 }
 
@@ -454,6 +458,20 @@ void InstrumentTrackWindow::updateName()
 	}
 }
 
+
+
+
+
+// Grey out the instrument's editor controls while frozen, mirroring how
+// effects are commonly disabled elsewhere (see EffectView), without
+// deleting or resetting any of the underlying plugin/effects state -- the
+// tab widget just stops accepting input. Left enabled while merely stale,
+// since a stale (not-yet-rendered) track is still played back live.
+void InstrumentTrackWindow::updateFrozenState()
+{
+	const bool editable = !m_track->isFrozen();
+	m_tabWidget->setEnabled(editable);
+}
 
 
 

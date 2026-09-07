@@ -50,6 +50,11 @@ public:
 	/// Export all unmuted tracks into individual file
 	void renderTracks();
 
+	/// Render a single, specific track to outputPath, muting all other
+	/// currently-unmuted tracks for the duration of the render and restoring
+	/// their mute state afterwards (used by the InstrumentTrack freeze feature).
+	void renderSingleTrack(Track* track, const QString& outputPath);
+
 	void abortProcessing();
 
 signals:
@@ -63,6 +68,7 @@ private slots:
 private:
 	QString pathForTrack( const Track *track, int num );
 	void restoreMutedState();
+	void muteAllExcept(Track* keepUnmuted);
 
 	void render( QString outputPath );
 

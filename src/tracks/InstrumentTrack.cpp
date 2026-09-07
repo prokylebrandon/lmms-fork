@@ -23,11 +23,16 @@
  */
 #include "InstrumentTrack.h"
 
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFileInfo>
+
 #include "AudioEngine.h"
 #include "AutomationClip.h"
 #include "ConfigManager.h"
 #include "ControllerConnection.h"
 #include "DataFile.h"
+#include "EffectChain.h"
 #include "GuiApplication.h"
 #include "Mixer.h"
 #include "InstrumentTrackView.h"
@@ -36,10 +41,15 @@
 #include "MidiClient.h"
 #include "MidiClip.h"
 #include "MixHelpers.h"
+#include "OutputSettings.h"
 #include "PatternStore.h"
 #include "PatternTrack.h"
 #include "PianoRoll.h"
 #include "Pitch.h"
+#include "ProjectRenderer.h"
+#include "RenderManager.h"
+#include "SampleBuffer.h"
+#include "SamplePlayHandle.h"
 #include "Song.h"
 
 namespace lmms
@@ -49,6 +59,8 @@ namespace lmms
 InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	Track(Track::Type::Instrument, tc),
 	MidiEventProcessor(),
+	m_frozenModel(false, this, tr("Freeze")),
+	m_freezeCacheId(s_nextFreezeCacheId.fetch_add(1, std::memory_order_relaxed)),
 	m_midiPort(tr("unnamed_track"), Engine::audioEngine()->midiClient(), this, this),
 	m_notes(),
 	m_sustainPedalPressed(false),
@@ -109,6 +121,21 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	connect(&m_pitchModel, SIGNAL(dataChanged()), this, SLOT(updatePitch()), Qt::DirectConnection);
 	connect(&m_pitchRangeModel, SIGNAL(dataChanged()), this, SLOT(updatePitchRange()), Qt::DirectConnection);
 	connect(&m_mixerChannelModel, SIGNAL(dataChanged()), this, SLOT(updateMixerChannel()), Qt::DirectConnection);
+
+	// Freeze support: track clips being added so we can watch them for
+	// edits that would invalidate a frozen render, and watch the effects
+	// chain and instrument swaps directly.
+	connect(this, &Track::clipAdded, this, &InstrumentTrack::connectClipToStaleTracking);
+	connect(this, &InstrumentTrack::instrumentChanged, this, &InstrumentTrack::markStale);
+	connect(m_audioBusHandle.effects(), &Model::dataChanged, this, &InstrumentTrack::markStale);
+	connect(m_audioBusHandle.effects(), &EffectChain::aboutToClear, this, &InstrumentTrack::markStale);
+	hookClipsForStaleTracking();
+
+	// Drive the single long-lived frozen-playback SamplePlayHandle off of
+	// the song's global play/pause/stop transitions; updateFrozenPlayback()
+	// itself checks isFrozen() and no-ops when not applicable, so it's safe
+	// to keep this connected permanently rather than only while frozen.
+	connect(Engine::getSong(), &Song::playbackStateChanged, this, &InstrumentTrack::updateFrozenPlayback);
 
 	autoAssignMidiDevice(true);
 }
@@ -204,6 +231,16 @@ float InstrumentTrack::baseFreq() const
 
 InstrumentTrack::~InstrumentTrack()
 {
+	// Tear down any in-flight freeze render and frozen playback before
+	// anything else is destroyed.
+	if (m_freezeRenderPending && m_freezeRenderManager)
+	{
+		disconnect(m_freezeRenderManager.get(), &RenderManager::finished,
+			this, &InstrumentTrack::onFreezeRenderFinished);
+		m_freezeRenderManager->abortProcessing();
+	}
+	stopFrozenPlayback();
+
 	// De-assign midi device
 	if (s_autoAssignedTrack == this)
 	{
@@ -700,6 +737,19 @@ void InstrumentTrack::removeMidiPortNode( DataFile & _dataFile )
 bool InstrumentTrack::play( const TimePos & _start, const f_cnt_t _frames,
 							const f_cnt_t _offset, int _clip_num )
 {
+	// Resolve any freeze state carried over from project load before
+	// consulting isFrozen() -- see finalizeLoadedFreezeState().
+	finalizeLoadedFreezeState();
+
+	// When frozen and not stale, skip the instrument entirely: no clip/note
+	// scanning, no NotePlayHandle creation. Audio comes from the single
+	// long-lived SamplePlayHandle managed by updateFrozenPlayback() instead.
+	// This is the actual CPU-saving behavior freezing exists for.
+	if (isFrozen())
+	{
+		return false;
+	}
+
 	if( ! m_instrument || ! tryLock() )
 	{
 		return false;
@@ -886,6 +936,19 @@ void InstrumentTrack::saveTrackSpecificSettings(QDomDocument& doc, QDomElement& 
 	}
 
 	m_audioBusHandle.effects()->saveState(doc, thisElement);
+
+	// Freeze state. Deliberately not included in presets -- a preset is
+	// instrument/effects configuration, not a rendering of a specific
+	// project's clips.
+	if (!presetMode)
+	{
+		QDomElement freezeElem = doc.createElement("freeze");
+		freezeElem.setAttribute("frozen", static_cast<int>(m_frozenModel.value()));
+		freezeElem.setAttribute("stale", static_cast<int>(m_stale));
+		freezeElem.setAttribute("path", m_frozenSamplePath);
+		freezeElem.setAttribute("fingerprint", QString::fromLatin1(m_frozenSourceFingerprint.toHex()));
+		thisElement.appendChild(freezeElem);
+	}
 }
 
 
@@ -973,6 +1036,19 @@ void InstrumentTrack::loadTrackSpecificSettings( const QDomElement & thisElement
 				{
 					m_midiCCModel[i]->loadSettings(node.toElement(), "cc" + QString::number(i));
 				}
+			}
+			else if (node.nodeName() == "freeze")
+			{
+				// Clips haven't been loaded yet at this point (Track::loadTrack()
+				// restores them after loadTrackSpecificSettings() returns), so we
+				// can't validate the fingerprint against them yet. Stash what was
+				// saved and finalize it lazily -- see finalizeLoadedFreezeState().
+				const QDomElement freezeElem = node.toElement();
+				m_pendingLoadedFreeze = true;
+				m_pendingLoadedFreezeFrozen = freezeElem.attribute("frozen", "0").toInt() != 0;
+				m_pendingLoadedFreezeStale = freezeElem.attribute("stale", "0").toInt() != 0;
+				m_frozenSamplePath = freezeElem.attribute("path");
+				m_frozenSourceFingerprint = QByteArray::fromHex(freezeElem.attribute("fingerprint").toLatin1());
 			}
 			// compat code - if node-name doesn't match any known
 			// one, we assume that it is an instrument-plugin
@@ -1075,6 +1151,8 @@ Instrument * InstrumentTrack::loadInstrument(const QString & _plugin_name,
 
 InstrumentTrack *InstrumentTrack::s_autoAssignedTrack = nullptr;
 
+std::atomic<quint64> InstrumentTrack::s_nextFreezeCacheId{0};
+
 /*! \brief Automatically assign a midi controller to this track, based on the midiautoassign setting
  *
  *  \param assign set to true to connect the midi device, set to false to disconnect
@@ -1103,6 +1181,324 @@ void InstrumentTrack::autoAssignMidiDevice(bool assign)
 	{
 		m_midiPort.subscribeReadablePort(device, assign);
 		m_hasAutoMidiDev = assign;
+	}
+}
+
+
+
+
+// =====================================================================
+// Freeze / unfreeze
+// =====================================================================
+
+void InstrumentTrack::hookClipsForStaleTracking()
+{
+	for (const auto& clip : getClips())
+	{
+		connectClipToStaleTracking(clip);
+	}
+}
+
+
+// Resolve freeze state that was read from a project file but couldn't be
+// validated at load time because this track's clips didn't exist yet (see
+// loadTrackSpecificSettings()). Recomputes the fingerprint now that clips
+// are available and compares it against what was saved: if they match, the
+// track resumes in its saved frozen/stale state and loads the cached audio
+// without re-rendering; if the cache file is missing, falls back to
+// unfrozen and warns rather than silently failing.
+// Idempotent and cheap when there is nothing pending, so it's safe to call
+// from every path that cares whether the track is really frozen.
+void InstrumentTrack::finalizeLoadedFreezeState()
+{
+	if (!m_pendingLoadedFreeze)
+	{
+		return;
+	}
+	m_pendingLoadedFreeze = false;
+
+	if (!m_pendingLoadedFreezeFrozen)
+	{
+		// Wasn't frozen when saved; nothing else to do.
+		return;
+	}
+
+	if (m_frozenSamplePath.isEmpty() || !QFileInfo::exists(m_frozenSamplePath))
+	{
+		qWarning("InstrumentTrack::finalizeLoadedFreezeState(): cached render for \"%s\" is "
+			"missing, falling back to live playback", qUtf8Printable(name()));
+		m_frozenSamplePath.clear();
+		m_stale = false;
+		emit frozenStateChanged();
+		return;
+	}
+
+	// Was already marked stale when saved (project was closed with pending
+	// edits since the last freeze) -- honor that without re-checking, since
+	// the fingerprint saved alongside it is the one from the last freeze,
+	// not the one from before whatever edit made it stale.
+	if (m_pendingLoadedFreezeStale)
+	{
+		m_stale = true;
+		m_frozenModel.setValue(true);
+		emit frozenStateChanged();
+		return;
+	}
+
+	const QByteArray currentFingerprint = freezeSourceFingerprint();
+	m_stale = (currentFingerprint != m_frozenSourceFingerprint);
+
+	m_frozenSample = std::make_unique<Sample>(SampleBuffer::fromFile(m_frozenSamplePath));
+	m_frozenModel.setValue(true);
+
+	emit frozenStateChanged();
+	updateFrozenPlayback();
+}
+
+
+// Connect a single clip's change signals to markStale(). Called for every
+// clip that already exists (from hookClipsForStaleTracking(), e.g. after
+// project load) and for every clip added afterwards (via the clipAdded signal).
+void InstrumentTrack::connectClipToStaleTracking(Clip* clip)
+{
+	if (clip == nullptr)
+	{
+		return;
+	}
+	// Using a plain connect() (not unique) is fine here: clipAdded() only
+	// fires once per clip for its lifetime, and loadTrackSpecificSettings()
+	// always deletes+recreates clips rather than reusing them, so there is
+	// no risk of connecting the same clip twice.
+	connect(clip, &Clip::dataChanged, this, &InstrumentTrack::markStale);
+	connect(clip, &Clip::lengthChanged, this, &InstrumentTrack::markStale);
+	connect(clip, &Clip::positionChanged, this, &InstrumentTrack::markStale);
+
+	// If a project load left freeze state pending validation, each clip
+	// arriving afterward is a chance to finalize it now that (more of) the
+	// track's clips exist; finalize is cheap and idempotent so this is safe
+	// to call on every clip rather than trying to detect "the last one".
+	finalizeLoadedFreezeState();
+}
+
+
+void InstrumentTrack::markStale()
+{
+	if (!m_frozenModel.value() || m_stale)
+	{
+		return;
+	}
+	m_stale = true;
+	stopFrozenPlayback();
+	emit frozenStateChanged();
+}
+
+
+// Directory used for this project's freeze caches. Falls back to a
+// process-local temp directory for projects that have never been saved,
+// so freezing still works before the user has picked a project file name.
+QString InstrumentTrack::freezeCacheDir()
+{
+	const QString projectFile = Engine::getSong()->projectFileName();
+	QDir base = projectFile.isEmpty()
+		? QDir::temp()
+		: QFileInfo(projectFile).absoluteDir();
+
+	QDir frozenDir(base.filePath("frozen"));
+	if (!frozenDir.exists())
+	{
+		base.mkpath("frozen");
+	}
+	return frozenDir.absolutePath();
+}
+
+
+// Fingerprint of everything that would make a cached render stale: the
+// instrument's state, its effects chain, and every clip on this track,
+// serialized the same way the project file would serialize them. This
+// intentionally reuses saveTrackSpecificSettings()/Clip::saveState() rather
+// than hand-picking individual models, so it can't silently miss a plugin
+// parameter or clip edit that a more targeted signal-based check would.
+//
+// Passes presetMode=true to saveTrackSpecificSettings() purely to suppress
+// the <freeze> block it appends in project-save mode -- freeze state is not
+// part of what would make a render stale, and including it here would make
+// the fingerprint depend on the very state it's used to validate. Nothing
+// else differs between preset-mode and project-mode output for the models
+// this fingerprint cares about (instrument, effects, MIDI CC, key range,
+// pitch, microtuner); the MIDI port connection is the only other thing
+// preset-mode omits, and MIDI routing doesn't affect rendered audio.
+QByteArray InstrumentTrack::freezeSourceFingerprint() const
+{
+	QDomDocument doc;
+	QDomElement root = doc.createElement("frozenSourceSnapshot");
+	doc.appendChild(root);
+
+	QDomElement trackElem = doc.createElement(nodeName());
+	root.appendChild(trackElem);
+	const_cast<InstrumentTrack*>(this)->saveTrackSpecificSettings(doc, trackElem, /*presetMode=*/true);
+
+	for (const auto& clip : getClips())
+	{
+		clip->saveState(doc, root);
+	}
+
+	QCryptographicHash hash(QCryptographicHash::Sha256);
+	hash.addData(doc.toByteArray());
+	return hash.result();
+}
+
+
+void InstrumentTrack::freeze()
+{
+	if (m_freezeRenderPending || m_instrument == nullptr)
+	{
+		return;
+	}
+
+	m_freezeRenderPending = true;
+	emit frozenStateChanged();
+
+	beginFreezeRender();
+}
+
+
+void InstrumentTrack::beginFreezeRender()
+{
+	m_pendingFreezeRenderPath = QDir(freezeCacheDir()).filePath(
+		QString("track_%1.wav").arg(m_freezeCacheId));
+
+	// Snapshot the fingerprint of what we're about to render *before*
+	// starting the (asynchronous) render, so that any edits made while the
+	// render is in flight are correctly detected as making the result stale
+	// the moment it lands.
+	m_frozenSourceFingerprint = freezeSourceFingerprint();
+
+	const auto* ae = Engine::audioEngine();
+	OutputSettings outputSettings(ae->outputSampleRate(), 160, OutputSettings::BitDepth::Depth32Bit,
+		OutputSettings::StereoMode::Stereo);
+
+	m_freezeRenderManager = std::make_unique<RenderManager>(
+		outputSettings, ProjectRenderer::ExportFileFormat::Wave, m_pendingFreezeRenderPath);
+
+	connect(m_freezeRenderManager.get(), &RenderManager::finished,
+		this, &InstrumentTrack::onFreezeRenderFinished);
+
+	m_freezeRenderManager->renderSingleTrack(this, m_pendingFreezeRenderPath);
+}
+
+
+void InstrumentTrack::onFreezeRenderFinished()
+{
+	const QString path = m_pendingFreezeRenderPath;
+	m_pendingFreezeRenderPath.clear();
+	m_freezeRenderManager.reset();
+	m_freezeRenderPending = false;
+
+	if (!QFileInfo::exists(path) || QFileInfo(path).size() == 0)
+	{
+		// Render failed to produce usable output (e.g. no file device
+		// available). Don't silently claim to be frozen.
+		qWarning("InstrumentTrack::freeze(): render of \"%s\" produced no output, staying unfrozen",
+			qUtf8Printable(name()));
+		emit frozenStateChanged();
+		return;
+	}
+
+	m_frozenSamplePath = path;
+	m_frozenSample = std::make_unique<Sample>(SampleBuffer::fromFile(m_frozenSamplePath));
+	m_stale = false;
+	m_frozenModel.setValue(true);
+
+	emit frozenStateChanged();
+	updateFrozenPlayback();
+}
+
+
+void InstrumentTrack::unfreeze()
+{
+	if (!m_frozenModel.value() && !m_freezeRenderPending)
+	{
+		return;
+	}
+
+	if (m_freezeRenderPending && m_freezeRenderManager)
+	{
+		disconnect(m_freezeRenderManager.get(), &RenderManager::finished,
+			this, &InstrumentTrack::onFreezeRenderFinished);
+		m_freezeRenderManager->abortProcessing();
+		m_freezeRenderManager.reset();
+		m_freezeRenderPending = false;
+		m_pendingFreezeRenderPath.clear();
+	}
+
+	stopFrozenPlayback();
+
+	// Nothing underneath was ever touched: the instrument, its clips, and
+	// all automation are exactly as they were, so restoring live playback
+	// is just switching a flag back and dropping our reference to the
+	// cached audio. The cache file itself is left on disk so re-freezing
+	// without further edits doesn't need a fresh render.
+	m_frozenModel.setValue(false);
+	m_stale = false;
+
+	emit frozenStateChanged();
+}
+
+
+// Remove our long-lived SamplePlayHandle (if any) from the audio engine.
+// Safe to call whether or not one is currently active.
+void InstrumentTrack::stopFrozenPlayback()
+{
+	if (m_frozenPlayHandle != nullptr)
+	{
+		Engine::audioEngine()->removePlayHandlesOfTypes(this, PlayHandle::Type::SamplePlayHandle);
+		m_frozenPlayHandle = nullptr;
+	}
+}
+
+
+// Called whenever Song::playbackStateChanged() fires while this track is
+// frozen. A frozen-and-not-stale InstrumentTrack plays back via exactly one
+// SamplePlayHandle spanning the whole cached render, created when playback
+// starts and torn down when it stops -- unlike live playback, this never
+// spawns a NotePlayHandle per note, which is the actual CPU saving.
+void InstrumentTrack::updateFrozenPlayback()
+{
+	finalizeLoadedFreezeState();
+
+	if (!isFrozen() || m_frozenSample == nullptr)
+	{
+		stopFrozenPlayback();
+		return;
+	}
+
+	Song* song = Engine::getSong();
+	if (!song->isPlaying())
+	{
+		stopFrozenPlayback();
+		return;
+	}
+
+	if (m_frozenPlayHandle != nullptr)
+	{
+		// already streaming
+		return;
+	}
+
+	// Seek the cached render to match wherever song playback currently is,
+	// so freezing/resuming mid-song still lines up with the live instrument.
+	const auto framesPerTick = Engine::framesPerTick();
+	const auto startFrame = static_cast<f_cnt_t>(song->getPlayPos().getTicks() * framesPerTick);
+
+	auto* handle = new SamplePlayHandle(m_frozenSample.get(), false);
+	handle->setTrack(this);
+	handle->setAudioBusHandle(audioBusHandle());
+	handle->setDoneMayReturnTrue(false);
+	handle->setStartFrame(startFrame);
+
+	if (Engine::audioEngine()->addPlayHandle(handle))
+	{
+		m_frozenPlayHandle = handle;
 	}
 }
 

@@ -109,6 +109,7 @@ public slots:
 	void toggleVisibility( bool _on );
 	void updateName();
 	void updateInstrumentView();
+	void updateFrozenState();
 
 
 protected:
