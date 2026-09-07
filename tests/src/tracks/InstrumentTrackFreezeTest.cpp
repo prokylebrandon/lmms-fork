@@ -20,9 +20,11 @@
  *
  */
 
+#include <QDir>
+#include <QDomDocument>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QSignalSpy>
-#include <QTemporaryDir>
 #include <QtTest>
 
 #include "Engine.h"
@@ -88,17 +90,19 @@ private slots:
 
 	void init()
 	{
-		// Freeze caches are written next to the project file; give each test
-		// its own throwaway project path so tests don't interfere with each
-		// other's cache files and don't leave anything behind.
-		m_tempDir = std::make_unique<QTemporaryDir>();
-		QVERIFY(m_tempDir->isValid());
-		Engine::getSong()->setProjectFileName(m_tempDir->filePath("freezetest.mmp"));
+		// Freeze caches fall back to the system temp directory when the
+		// project has no file name yet (see InstrumentTrack::freezeCacheDir()),
+		// which is the normal state for a Song built directly in a test
+		// rather than loaded from/saved to disk -- Song::setProjectFileName()
+		// is private and only reachable via the heavier saveProjectFile(),
+		// so tests don't set it directly. Each InstrumentTrack already gets
+		// a unique cache filename (see InstrumentTrack::m_freezeCacheId), so
+		// sharing the system temp directory across test runs is safe and
+		// nothing further needs to be set up here.
 	}
 
 	void cleanup()
 	{
-		m_tempDir.reset();
 	}
 
 	// A track with no instrument loaded (m_instrument stays null / never
@@ -282,8 +286,6 @@ private slots:
 		}
 	}
 
-private:
-	std::unique_ptr<QTemporaryDir> m_tempDir;
 };
 
 QTEST_GUILESS_MAIN(InstrumentTrackFreezeTest)
