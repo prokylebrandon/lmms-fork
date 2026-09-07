@@ -273,13 +273,16 @@ private slots:
 			InstrumentTrack loadedTrack(song);
 			loadedTrack.loadSettings(trackElement);
 
-			// loadSettings() restores clips as siblings of the
-			// instrumenttrack element as part of this same call; the
-			// freeze state is only fully resolved once those clips exist
-			// (see InstrumentTrack::finalizeLoadedFreezeState()), which
-			// happens as each clip is added during loading -- so by the
-			// time loadSettings() returns, isFrozen() should already
-			// reflect it.
+			// Freeze-state finalization is deliberately deferred to the next
+			// event-loop iteration rather than happening synchronously
+			// inside loadSettings() (see InstrumentTrack::loadTrackSpecificSettings()
+			// and finalizeLoadedFreezeState()), specifically to avoid doing
+			// file I/O and Sample construction reentrantly from inside
+			// Track::create()'s call stack -- e.g. while cloning a frozen
+			// track. Pump the event loop briefly so that deferred call
+			// actually runs before asserting on the result.
+			QTest::qWait(50);
+
 			QVERIFY(loadedTrack.isFrozen());
 			QVERIFY(!loadedTrack.isStale());
 			QCOMPARE(loadedTrack.frozenSamplePath(), savedSamplePath);
