@@ -39,6 +39,7 @@
 #include "DeprecationHelper.h"
 #include "Engine.h"
 #include "FadeButton.h"
+#include "InstrumentTrackView.h"
 #include "StringPairDrag.h"
 #include "Track.h"
 #include "TrackGrip.h"
@@ -128,17 +129,31 @@ TrackView::TrackView( Track * track, TrackContainerView * tcv ) :
  *
  *  \param re the Resize Event to handle.
  */
+int TrackView::operationsWidgetExtraWidth() const
+{
+	return dynamic_cast<const InstrumentTrackView*>(this) != nullptr
+		? TRACK_OP_WIDTH_FREEZE_EXTRA : 0;
+}
+
+
+
+
 void TrackView::resizeEvent( QResizeEvent * re )
 {
+	// InstrumentTrack rows carry an extra Freeze button in their operations
+	// widget alongside the usual menu/mute/solo buttons; give just those
+	// rows the extra width they need rather than widening every track type.
+	const int freezeExtra = operationsWidgetExtraWidth();
+
 	if( ConfigManager::inst()->value( "ui",
 					  "compacttrackbuttons" ).toInt() )
 	{
-		m_trackOperationsWidget.setFixedSize( TRACK_OP_WIDTH_COMPACT, height() - 1 );
+		m_trackOperationsWidget.setFixedSize( TRACK_OP_WIDTH_COMPACT + freezeExtra, height() - 1 );
 		m_trackSettingsWidget.setFixedSize( DEFAULT_SETTINGS_WIDGET_WIDTH_COMPACT, height() - 1 );
 	}
 	else
 	{
-		m_trackOperationsWidget.setFixedSize( TRACK_OP_WIDTH, height() - 1 );
+		m_trackOperationsWidget.setFixedSize( TRACK_OP_WIDTH + freezeExtra, height() - 1 );
 		m_trackSettingsWidget.setFixedSize( DEFAULT_SETTINGS_WIDGET_WIDTH, height() - 1 );
 	}
 
@@ -277,6 +292,7 @@ void TrackView::mousePressEvent( QMouseEvent * me )
 							"compacttrackbuttons" ).toInt()==1 ?
 		DEFAULT_SETTINGS_WIDGET_WIDTH_COMPACT + TRACK_OP_WIDTH_COMPACT :
 		DEFAULT_SETTINGS_WIDGET_WIDTH + TRACK_OP_WIDTH;
+	widgetTotal += operationsWidgetExtraWidth();
 	if (m_trackContainerView->allowRubberband() == true  && pos.x() > widgetTotal)
 	{
 		QWidget::mousePressEvent( me );
@@ -325,6 +341,7 @@ void TrackView::mouseMoveEvent( QMouseEvent * me )
 							"compacttrackbuttons" ).toInt()==1 ?
 		DEFAULT_SETTINGS_WIDGET_WIDTH_COMPACT + TRACK_OP_WIDTH_COMPACT :
 		DEFAULT_SETTINGS_WIDGET_WIDTH + TRACK_OP_WIDTH;
+	widgetTotal += operationsWidgetExtraWidth();
 	if (m_trackContainerView->allowRubberband() == true && pos.x() > widgetTotal)
 	{
 		QWidget::mouseMoveEvent( me );

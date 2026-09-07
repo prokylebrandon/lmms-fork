@@ -55,6 +55,11 @@ const int TRACK_OP_WIDTH = 78;
 const int DEFAULT_SETTINGS_WIDGET_WIDTH_COMPACT = 136;
 const int TRACK_OP_WIDTH_COMPACT = TRACK_OP_WIDTH;
 
+// Extra width the operations widget needs on InstrumentTrack rows only, to
+// fit the Freeze button alongside the existing menu/mute/solo buttons
+// without shrinking those or widening every other track type's header.
+const int TRACK_OP_WIDTH_FREEZE_EXTRA = 22;
+
 
 class TrackView : public QWidget, public ModelView, public JournallingObject
 {
@@ -140,6 +145,14 @@ protected:
 
 private:
 	void resizeToHeight(int height);
+
+	// Extra pixel width this row's operations widget needs beyond
+	// TRACK_OP_WIDTH/TRACK_OP_WIDTH_COMPACT -- non-zero only for
+	// InstrumentTrack rows, which carry an extra Freeze button. Used both
+	// to size the operations widget (resizeEvent) and to keep the
+	// controls-area hit-test threshold (mousePressEvent/mouseMoveEvent)
+	// consistent with that size.
+	int operationsWidgetExtraWidth() const;
 
 private:
 	enum class Action
