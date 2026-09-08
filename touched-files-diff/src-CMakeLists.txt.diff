@@ -1,0 +1,60 @@
+--- orig/lmms-master/CMakeLists.txt	2026-08-30 03:45:12.000000000 +0000
++++ lmms-master/CMakeLists.txt	2026-09-08 11:17:41.228431500 +0000
+@@ -43,7 +43,9 @@
+ endif()
+ 
+ INCLUDE(PluginList)
+-INCLUDE(CheckSubmodules)
++# LOCAL BUILD WORKAROUND (not a suggested tree change): this checkout is a zip
++# snapshot with no .git, so CheckSubmodules' git commands can't run here.
++# INCLUDE(CheckSubmodules)
+ INCLUDE(AddFileDependencies)
+ INCLUDE(CheckIncludeFiles)
+ INCLUDE(FindPkgConfig)
+@@ -99,6 +101,7 @@
+ OPTION(WANT_STK		"Include Stk (Synthesis Toolkit) support" ON)
+ OPTION(WANT_SWH		"Include Steve Harris's LADSPA plugins" ON)
+ OPTION(WANT_TAP		"Include Tom's Audio Processing LADSPA plugins" ON)
++OPTION(WANT_VST3	"Include VST3 plugin support (experimental)" ON)
+ OPTION(WANT_VST		"Include VST support" ON)
+ OPTION(WANT_VST_32	"Include 32-bit Windows VST support" ON)
+ OPTION(WANT_VST_64	"Include 64-bit Windows VST support" ON)
+@@ -367,6 +370,30 @@
+ 	set(STATUS_LV2 "not built as requested")
+ endif()
+ 
++# VST3 (experimental. Phase 0 decision: vendored, in-process. Target
++# platform is Windows per direct instruction -- see phase reports. The SDK
++# itself already supports Windows/macOS/Linux via separate module-loader
++# source files (module_win32.cpp/module_mac.mm/module_linux.cpp), so this
++# is gated on WANT_VST3 alone; src/CMakeLists.txt picks the right loader
++# file for whichever LMMS_BUILD_* is actually active. This also means the
++# Linux path stays live for compile-checking the platform-independent
++# logic even though Linux isn't the shipping target -- see phase report.)
++if(WANT_VST3)
++	set(LMMS_VST3_SDK_ROOT "${CMAKE_SOURCE_DIR}/src/3rdparty/vst3sdk")
++	if(EXISTS "${LMMS_VST3_SDK_ROOT}/CMakeLists.txt")
++		set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
++		set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES OFF CACHE BOOL "" FORCE)
++		set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
++		add_subdirectory("${LMMS_VST3_SDK_ROOT}" "${CMAKE_BINARY_DIR}/vst3sdk")
++		set(LMMS_HAVE_VST3 TRUE)
++		set(STATUS_VST3 "OK (experimental, in-process, target: Windows)")
++	else()
++		set(STATUS_VST3 "not found -- see src/3rdparty/vst3sdk (vendor per VENDOR_SDK.md)")
++	endif()
++else()
++	set(STATUS_VST3 "not built as requested")
++endif()
++
+ IF(WANT_SUIL)
+ 	IF(PKG_CONFIG_FOUND)
+ 		PKG_CHECK_MODULES(SUIL suil-0)
+@@ -956,6 +983,7 @@
+ "Optional plugins\n"
+ "----------------\n"
+ "* Lv2 plugins                 : ${STATUS_LV2}\n"
++"* VST3 plugin host (experimental) : ${STATUS_VST3}\n"
+ "* SUIL for plugin UIs         : ${STATUS_SUIL}\n"
+ "* ZynAddSubFX instrument      : ${STATUS_ZYN}\n"
+ "* Carla Patchbay & Rack       : ${STATUS_CARLA}\n"

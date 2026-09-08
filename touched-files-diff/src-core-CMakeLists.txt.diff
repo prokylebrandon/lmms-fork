@@ -1,0 +1,52 @@
+--- orig/lmms-master/src/CMakeLists.txt	2026-08-30 03:45:12.000000000 +0000
++++ lmms-master/src/CMakeLists.txt	2026-09-08 04:16:16.423823627 +0000
+@@ -101,12 +101,34 @@
+ ENDIF()
+ SET(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+ 
++if(LMMS_HAVE_VST3)
++	# sdk_hosting deliberately excludes the platform module-loader (see
++	# Phase 1 report); add the right one directly, matching how the SDK's
++	# own moduleinfotool target does it per-platform. Same story for
++	# MemoryStream (Phase 4): declared in a header sdk_common exports, but
++	# implemented in a .cpp only the SDK's own validator/basewrapper
++	# targets happen to compile -- not part of any lib we link against.
++	list(APPEND LMMS_SRCS "${LMMS_VST3_SDK_ROOT}/public.sdk/source/common/memorystream.cpp")
++	if(LMMS_BUILD_WIN32)
++		list(APPEND LMMS_SRCS "${LMMS_VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_win32.cpp")
++	elseif(LMMS_BUILD_APPLE)
++		list(APPEND LMMS_SRCS "${LMMS_VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_mac.mm")
++	else()
++		list(APPEND LMMS_SRCS "${LMMS_VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_linux.cpp")
++	endif()
++endif()
++
+ ADD_LIBRARY(lmmsobjs OBJECT
+ 	${LMMS_SRCS}
+ 	${LMMS_INCLUDES}
+ 	${LMMS_RCC_OUT}
+ )
+ 
++if(LMMS_HAVE_VST3)
++	target_include_directories(lmmsobjs SYSTEM PUBLIC "${LMMS_VST3_SDK_ROOT}")
++	target_link_libraries(lmmsobjs sdk_hosting)
++endif()
++
+ GENERATE_EXPORT_HEADER(lmmsobjs
+ 	BASE_NAME lmms
+ )
+@@ -120,6 +142,14 @@
+ )
+ target_static_libraries(lmms PUBLIC lmmsobjs)
+ 
++if(LMMS_HAVE_VST3)
++	# Throwaway headless runtime-proof harness for Phase 4 (save/load) --
++	# not part of the shipped product, not installed. See phase report.
++	ADD_EXECUTABLE(vst3_phase4_test vst3_phase4_test.cpp)
++	TARGET_INCLUDE_DIRECTORIES(vst3_phase4_test PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
++	target_static_libraries(vst3_phase4_test PUBLIC lmmsobjs)
++endif()
++
+ # Enable updated C++ language standards
+ IF(MSVC)
+ 	TARGET_COMPILE_OPTIONS(lmmsobjs PUBLIC "/Zc:__cplusplus" "/permissive-")

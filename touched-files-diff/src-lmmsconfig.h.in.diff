@@ -1,0 +1,12 @@
+--- orig/lmms-master/src/core/CMakeLists.txt	2026-08-30 03:45:12.000000000 +0000
++++ lmms-master/src/core/CMakeLists.txt	2026-09-07 07:44:30.596190264 +0000
+@@ -120,6 +120,9 @@
+ 	core/lv2/Lv2UridMap.cpp
+ 	core/lv2/Lv2Worker.cpp
+ 
++	core/vst3/Vst3ControlBase.cpp
++	core/vst3/Vst3SubPluginFeatures.cpp
++
+ 	core/midi/MidiAlsaRaw.cpp
+ 	core/midi/MidiAlsaSeq.cpp
+ 	core/midi/MidiClient.cpp

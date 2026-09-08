@@ -1,57 +1,73 @@
-<div align="center">
-	<h1>
-	<img src="https://raw.githubusercontent.com/LMMS/artwork/master/Icon%20%26%20Mimetypes/lmms-64x64.svg" alt="LMMS Logo"><br>LMMS
-	</h1>
-	<p>Cross-platform music production software</p>
-	<p>
-		<a href="https://lmms.io/">Website</a>
-		⦁︎
-		<a href="https://github.com/LMMS/lmms/releases">Releases</a>
-		⦁︎
-		<a href="https://github.com/LMMS/lmms/wiki">Developer wiki</a>
-		⦁︎
-		<a href="https://lmms.io/documentation">User manual</a>
-		⦁︎
-		<a href="https://lmms.io/showcase/">Showcase</a>
-		⦁︎
-		<a href="https://lmms.io/lsp/">Sharing platform</a>
-	</p>
-	<p>
-		<a href="https://github.com/LMMS/lmms/actions/workflows/build.yml"><img src="https://github.com/LMMS/lmms/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
-		<a href="https://lmms.io/download"><img src="https://img.shields.io/github/release/LMMS/lmms.svg?maxAge=3600" 	alt="Latest stable release"></a>
-		<a href="https://github.com/LMMS/lmms/releases"><img src="https://img.shields.io/github/downloads/LMMS/lmms/total.svg?maxAge=3600" alt="Overall downloads on Github"></a>
-		<a href="https://discord.gg/3sc5su7"><img src="https://img.shields.io/badge/chat-on%20discord-7289DA.svg" alt="Join the chat at Discord"></a>
-		<a href="https://www.transifex.com/lmms/lmms/"><img src="https://img.shields.io/badge/localise-on_transifex-green.svg"></a>
-	</p>
-</div>
+# VST3 hosting for LMMS — consolidated final state
 
-What is LMMS?
---------------
+Everything from Phases 1–5 in one place, at its final (Phase 4/5) revision
+— not the incremental per-phase snapshots from earlier in the session.
+Read the individual PHASE0-5 reports for the why; this is just the what,
+gathered so you don't have to hand-merge five zips where the same file
+(`Vst3ControlBase.h` especially) changed more than once.
 
-LMMS is an open-source cross-platform digital audio workstation designed for music production. It includes an advanced Piano Roll, Beat Sequencer, Song Editor, and Mixer for composing, arranging, and mixing music. It comes with 15+ synthesizer plugins by default, along with VST2 and SoundFont2 support.
+## Apply to your real clone
 
-Features
----------
+1. **New files** — copy as-is, no merging needed:
+   ```
+   include/Vst3ControlBase.h
+   include/Vst3SubPluginFeatures.h
+   src/core/vst3/Vst3ControlBase.cpp
+   src/core/vst3/Vst3SubPluginFeatures.cpp
+   plugins/Vst3Effect/          (whole directory)
+   plugins/Vst3Instrument/      (whole directory)
+   ```
 
-* Song-Editor for arranging melodies, samples, patterns, and automation
-* Pattern-Editor for creating beats and patterns
-* An easy-to-use Piano-Roll for editing patterns and melodies
-* A Mixer with unlimited mixer channels and arbitrary number of effects
-* Many powerful instrument and effect-plugins out of the box
-* Full user-defined track-based automation and computer-controlled automation sources
-* Compatible with many standards such as SoundFont2, VST2 (instruments and effects), LADSPA, LV2, GUS Patches, and full MIDI support
-* MIDI file importing and exporting
+2. **Existing files** — apply the diffs in `touched-files-diffs/` (small:
+   145 lines total across all 5):
+   ```
+   git apply touched-files-diffs/root-CMakeLists.txt.diff      # CMakeLists.txt
+   git apply touched-files-diffs/PluginList.cmake.diff          # cmake/modules/PluginList.cmake
+   git apply touched-files-diffs/src-CMakeLists.txt.diff        # src/CMakeLists.txt
+   git apply touched-files-diffs/src-core-CMakeLists.txt.diff   # src/core/CMakeLists.txt
+   git apply touched-files-diffs/src-lmmsconfig.h.in.diff       # src/lmmsconfig.h.in
+   ```
+   (Run from your repo root; `git apply` needs the right `-p` level if it
+   complains — check the `---`/`+++` paths in each diff match, or just
+   apply the small hunks by hand, they're short.)
 
-Building
----------
+3. **Vendor the SDK** — not included here (large, and you want a real git
+   submodule in your actual repo, not a flat copy). See `VENDOR_SDK.md`
+   from the Phase 1 delivery for exact commands and the commit this was
+   built against.
 
-See [Compiling LMMS](https://github.com/LMMS/lmms/wiki/Compiling)
+4. **`vst3_phase4_test.cpp`** — the throwaway runtime-proof harness from
+   Phase 4. Not part of the product; useful if you want to re-run the
+   save/load proof yourself, or adapt it to test against a real-world
+   plugin rather than the SDK's own examples. Needs the CMake target
+   wiring from `touched-files-diffs/src-CMakeLists.txt.diff` (already
+   included there).
 
-Join LMMS-development
-----------------------
+## Before you build
 
-If you are interested in LMMS, its programming, artwork, testing, writing demo songs, (and improving this README...) or something like that, you're welcome to participate in the development of LMMS!
+- Your real clone's submodules are already correctly pinned via
+  `git submodule update --init` — use those, not anything implied by my
+  session (I was working from a `.git`-less zip and had to fetch several
+  third-party deps from live upstream HEAD to get *anything* to configure;
+  one of them, `portsmf`, had drifted enough from the pinned version to
+  break an unrelated file, `MidiImport.cpp`, in the Phase 5 full-build
+  check — not a concern for you, but don't copy my fetched submodule
+  state hoping it saves you a step).
 
-Information about what you can do and how can be found in the [wiki](https://github.com/LMMS/lmms/wiki).
+## Known gaps, unchanged from the phase reports
 
-Before coding a new big feature, please _always_ [file an issue](https://github.com/LMMS/lmms/issues/new) for your idea and suggestions about your feature and about the intended implementation on GitHub, or ask in one of the tech channels on Discord and wait for replies! Maybe there are different ideas, improvements, or hints, or maybe your feature is not welcome/needed at the moment.
+- Nothing in this project has run on Windows — the actual target.
+  Everything Windows-specific (`module_win32.cpp` linkage, bundle/flat-file
+  discovery, `%LOCALAPPDATA%`/`Program Files` scan paths) was reasoned
+  through by reading the SDK/CMake source, not executed.
+- Native VST3 GUI embedding (`IPlugView`, VSTGUI) — Phase 3's stretch goal
+  — was never attempted.
+- `Vst3Instrument::handleMidiEvent` queues directly rather than through a
+  thread-safe ring buffer the way `Lv2ControlBase::handleMidiInputEvent`
+  does. Fine for the tests run so far; a real gap under live MIDI input
+  from a separate thread.
+- Phase 4's runtime test isolated, but didn't fully root-cause, a
+  teardown-order crash involving `Engine::init()`'s globals — worked
+  around in the throwaway test harness, not something that should affect
+  a real LMMS session (which has its own proper shutdown path the harness
+  skips), but not verified clean either.

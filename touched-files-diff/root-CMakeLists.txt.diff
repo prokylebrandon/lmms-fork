@@ -1,0 +1,11 @@
+--- orig/lmms-master/cmake/modules/PluginList.cmake	2026-08-30 03:45:12.000000000 +0000
++++ lmms-master/cmake/modules/PluginList.cmake	2026-09-07 07:44:33.329385134 +0000
+@@ -73,6 +73,8 @@
+ 	VstBase
+ 	Vestige
+ 	VstEffect
++	Vst3Effect
++	Vst3Instrument
+ 	Watsyn
+ 	WaveShaper
+ 	Vectorscope
