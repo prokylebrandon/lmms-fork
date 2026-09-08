@@ -71,6 +71,34 @@ bool waitForFreezeToFinish(InstrumentTrack& track, int timeoutMs = 15000)
 	return !track.isFreezing();
 }
 
+// Similar to waitForFreezeToFinish(), but for the debounced auto-refreeze
+// path: waits through the debounce delay AND the subsequent asynchronous
+// render, until the track becomes frozen-and-not-stale again (or times out).
+bool waitForAutoRefreezeToComplete(InstrumentTrack& track, int timeoutMs = 15000)
+{
+	if (track.isFrozen())
+	{
+		return true;
+	}
+
+	QEventLoop loop;
+	QTimer timeoutTimer;
+	timeoutTimer.setSingleShot(true);
+	QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+
+	QObject::connect(&track, &InstrumentTrack::frozenStateChanged, &loop, [&]() {
+		if (track.isFrozen())
+		{
+			loop.quit();
+		}
+	});
+
+	timeoutTimer.start(timeoutMs);
+	loop.exec();
+
+	return track.isFrozen();
+}
+
 } // namespace
 
 
@@ -286,7 +314,145 @@ private slots:
 			QVERIFY(loadedTrack.isFrozen());
 			QVERIFY(!loadedTrack.isStale());
 			QCOMPARE(loadedTrack.frozenSamplePath(), savedSamplePath);
+			// The auto-refreeze preference round-trips too (defaults to
+			// enabled, and this test never touched it).
+			QVERIFY(loadedTrack.autoRefreezeModel()->value());
 		}
+	}
+
+
+	// The most direct regression test for a bug where cloning a frozen
+	// track appeared to remove the freeze from both the clone AND the
+	// original. Root cause: Instrument/Effect/Clip all inherit
+	// JournallingObject, whose saveState() embeds a per-instance id that's
+	// never guaranteed to match between the object live when the
+	// fingerprint was computed and any freshly-reconstructed object
+	// representing the same content -- freezeSourceFingerprint() must
+	// strip that bookkeeping metadata before hashing, or a clone (or an
+	// ordinary project reload) always appears to have changed even with
+	// zero real edits. Exercises Track::clone() directly rather than a
+	// manual save/load round trip, since clone() is the actual code path
+	// that was broken.
+	void testCloneFrozenTrackPreservesFreezeState()
+	{
+		auto* song = Engine::getSong();
+		InstrumentTrack track(song);
+		track.loadInstrument("tripleoscillator");
+
+		if (track.instrument() == nullptr || track.instrument()->descriptor()->name != QString("tripleoscillator"))
+		{
+			QSKIP("tripleoscillator plugin not available in this build/environment");
+		}
+
+		auto* clip = new MidiClip(&track);
+		clip->changeLength(TimePos(1, 0));
+		clip->addNote(Note(TimePos(1, 0), TimePos(0, 0), DefaultKey), false);
+
+		track.freeze();
+		QVERIFY2(waitForFreezeToFinish(track), "freeze render did not complete in time");
+		QVERIFY(track.isFrozen());
+		QVERIFY(!track.isStale());
+		const QString originalPath = track.frozenSamplePath();
+
+		Track* clonedTrack = track.clone();
+		QVERIFY(clonedTrack != nullptr);
+		auto* clonedInstrumentTrack = dynamic_cast<InstrumentTrack*>(clonedTrack);
+		QVERIFY(clonedInstrumentTrack != nullptr);
+
+		// The clone's freeze-state finalization is deferred the same way
+		// project load is; see finalizeLoadedFreezeState().
+		QTest::qWait(50);
+
+		QVERIFY2(clonedInstrumentTrack->isFrozen(),
+			"clone of a frozen track should also be frozen, not fall back to live");
+		QVERIFY(!clonedInstrumentTrack->isStale());
+		QCOMPARE(clonedInstrumentTrack->frozenSamplePath(), originalPath);
+
+		// The original must be completely unaffected by cloning it.
+		QVERIFY2(track.isFrozen(), "cloning a track must not un-freeze the original");
+		QVERIFY(!track.isStale());
+
+		delete clonedTrack;
+	}
+
+
+	// Editing a frozen track should not require a manual re-freeze click:
+	// once edits settle down (no further changes for the debounce window),
+	// the track should automatically re-freeze itself in the background.
+	void testAutoRefreezeAfterEditSettles()
+	{
+		auto* song = Engine::getSong();
+		InstrumentTrack track(song);
+		track.loadInstrument("tripleoscillator");
+
+		if (track.instrument() == nullptr || track.instrument()->descriptor()->name != QString("tripleoscillator"))
+		{
+			QSKIP("tripleoscillator plugin not available in this build/environment");
+		}
+
+		// Auto-refreeze is on by default; the rest of this test depends on
+		// that, so assert it explicitly rather than assuming.
+		QVERIFY(track.autoRefreezeModel()->value());
+
+		auto* clip = new MidiClip(&track);
+		clip->changeLength(TimePos(1, 0));
+		clip->addNote(Note(TimePos(1, 0), TimePos(0, 0), DefaultKey), false);
+
+		track.freeze();
+		QVERIFY2(waitForFreezeToFinish(track), "initial freeze render did not complete in time");
+		QVERIFY(track.isFrozen());
+
+		// Edit the clip: this marks it stale and should schedule an
+		// automatic re-freeze after the debounce window, with no manual
+		// freeze() call from the test.
+		clip->changeLength(TimePos(2, 0));
+		QVERIFY(track.isStale());
+		QVERIFY(!track.isFrozen());
+
+		QVERIFY2(waitForAutoRefreezeToComplete(track),
+			"track did not automatically re-freeze itself after edits settled");
+
+		QVERIFY(track.isFrozen());
+		QVERIFY(!track.isStale());
+		QVERIFY(!track.frozenSamplePath().isEmpty());
+	}
+
+
+	// Disabling auto-refreeze should restore the original manual-only
+	// behavior: a stale track stays stale (and keeps falling back to live
+	// playback) until the user explicitly re-freezes it.
+	void testAutoRefreezeCanBeDisabled()
+	{
+		auto* song = Engine::getSong();
+		InstrumentTrack track(song);
+		track.loadInstrument("tripleoscillator");
+
+		if (track.instrument() == nullptr || track.instrument()->descriptor()->name != QString("tripleoscillator"))
+		{
+			QSKIP("tripleoscillator plugin not available in this build/environment");
+		}
+
+		track.autoRefreezeModel()->setValue(false);
+
+		auto* clip = new MidiClip(&track);
+		clip->changeLength(TimePos(1, 0));
+		clip->addNote(Note(TimePos(1, 0), TimePos(0, 0), DefaultKey), false);
+
+		track.freeze();
+		QVERIFY2(waitForFreezeToFinish(track), "initial freeze render did not complete in time");
+		QVERIFY(track.isFrozen());
+
+		clip->changeLength(TimePos(2, 0));
+		QVERIFY(track.isStale());
+
+		// Wait comfortably longer than the debounce window would have
+		// taken if auto-refreeze were enabled, and confirm nothing
+		// happened on its own.
+		QTest::qWait(3000);
+
+		QVERIFY(track.isStale());
+		QVERIFY(!track.isFrozen());
+		QVERIFY(!track.isFreezing());
 	}
 
 };

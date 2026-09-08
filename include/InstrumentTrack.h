@@ -30,6 +30,8 @@
 #include <atomic>
 #include <memory>
 
+#include <QTimer>
+
 #include "AudioBusHandle.h"
 #include "InstrumentFunctions.h"
 #include "InstrumentSoundShaping.h"
@@ -280,6 +282,12 @@ public:
 	//! Path of the cached render, or an empty string if never frozen.
 	const QString& frozenSamplePath() const { return m_frozenSamplePath; }
 
+	//! When enabled (the default), a stale frozen track automatically
+	//! re-freezes itself in the background after edits settle down, rather
+	//! than requiring a manual re-freeze click. Disabling this restores the
+	//! original manual-only behavior.
+	BoolModel* autoRefreezeModel() { return &m_autoRefreezeModel; }
+
 signals:
 	void instrumentChanged();
 	void midiNoteOn( const lmms::Note& );
@@ -314,6 +322,8 @@ private slots:
 	void markStale();
 	void connectClipToStaleTracking(lmms::Clip* clip);
 	void updateFrozenPlayback();
+	void onAutoRefreezeTimerFired();
+	void checkAutoRefreezeAfterPlaybackStop();
 
 private:
 	void processCCEvent(int controller);
@@ -328,6 +338,7 @@ private:
 	void beginFreezeRender();
 	void stopFrozenPlayback();
 	void finalizeLoadedFreezeState();
+	void scheduleAutoRefreezeIfEnabled();
 
 	std::unique_ptr<RenderManager> m_freezeRenderManager;
 	bool m_freezeRenderPending = false;
@@ -339,6 +350,18 @@ private:
 	QByteArray m_frozenSourceFingerprint;
 	std::unique_ptr<Sample> m_frozenSample;
 	class SamplePlayHandle* m_frozenPlayHandle = nullptr;
+
+	// Debounced auto-re-freeze: rather than requiring a manual click every
+	// time an edit makes a frozen track stale, wait for edits to settle
+	// (see scheduleAutoRefreezeIfEnabled(), restarted on every qualifying
+	// edit so a burst of edits coalesces into a single eventual re-freeze)
+	// and then re-freeze automatically -- unless the song is actively
+	// playing, in which case freezing would hijack the audio engine's
+	// output device mid-listening, so it waits for playback to stop first
+	// (see checkAutoRefreezeAfterPlaybackStop()).
+	BoolModel m_autoRefreezeModel;
+	QTimer m_autoRefreezeTimer;
+	bool m_autoRefreezeWaitingForPlaybackStop = false;
 
 	// Freeze state read from a project file, held here until clips (loaded
 	// after loadTrackSpecificSettings() returns) are available to validate

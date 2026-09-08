@@ -1,55 +1,68 @@
-# Freeze Track feature — file package
+# Two things fixed/added, four files changed
 
-This zip contains only the files that were changed or added to implement the
-"Freeze Track" feature for InstrumentTrack, mirroring their real folder
-locations inside the LMMS source tree (`lmms-master/`).
+## 1. Root cause of "freeze removed for both original and clone"
 
-## Files included
+This turned out to be a real, fairly deep bug -- not clone-specific, and
+not something a quick patch could fix safely.
 
-**Changed:**
+**What was happening:** `Instrument`, `Effect`, and `Clip` all inherit
+`JournallingObject` (used for undo/redo), whose `saveState()` unconditionally
+embeds that object's own bookkeeping id -- assigned fresh, per-instance, at
+construction time, with no relationship to the object's actual content. The
+staleness fingerprint was hashing that id along with everything else. Since
+a clone (and, it turns out, an ordinary project reload) constructs brand
+new Instrument/Effect/Clip objects with fresh ids, the fingerprint would
+*always* differ from what was saved at freeze time -- even with zero real
+edits -- making the track look stale/unfrozen immediately.
+
+**Fix:** `freezeSourceFingerprint()` now strips that bookkeeping metadata
+(the id attributes and `<journallingObject>` nodes) from the snapshot
+before hashing, so only genuine content differences register. This also
+fixes staleness detection on ordinary save-and-reopen, which had the exact
+same underlying problem, even though you hadn't hit it yet.
+
+A new test, `testCloneFrozenTrackPreservesFreezeState`, exercises
+`Track::clone()` directly as the most literal regression test for this.
+
+## 2. Auto re-freeze when stale (no more manual re-freezing after every edit)
+
+New behavior, on by default: when a frozen track goes stale (e.g. you add a
+note), instead of requiring you to click "Re-freeze" every time, it waits
+~2 seconds after your last edit and re-freezes itself automatically in the
+background.
+
+Two things worth knowing:
+- **Debounced, not instant** -- a burst of edits (adding several notes in a
+  row) coalesces into one render once things settle, not one render per
+  note.
+- **Never interrupts playback** -- freezing has to temporarily swap the
+  audio engine to an offline render device. If it fired while you were
+  listening to playback, your audio would cut out. So if you're mid-playback
+  when the debounce elapses, it waits until you stop before actually
+  re-rendering.
+
+You can turn this off per-track via the new "Auto re-freeze when stale"
+checkbox in the same right-click gear menu as Freeze/Unfreeze -- unchecking
+it restores the original manual-only behavior. The preference is saved with
+the project.
+
+Two new tests cover this: `testAutoRefreezeAfterEditSettles` and
+`testAutoRefreezeCanBeDisabled`.
+
+## Files changed
+
 - `include/InstrumentTrack.h`
-- `include/RenderManager.h`
-- `include/SamplePlayHandle.h`
-- `include/TrackOperationsWidget.h`
-- `include/InstrumentTrackWindow.h`
-- `src/core/RenderManager.cpp`
 - `src/tracks/InstrumentTrack.cpp`
 - `src/gui/tracks/TrackOperationsWidget.cpp`
-- `src/gui/instrument/InstrumentTrackWindow.cpp`
-- `tests/CMakeLists.txt` (one new line registering the test below)
-
-**New:**
 - `tests/src/tracks/InstrumentTrackFreezeTest.cpp`
 
-No other files were touched, and no new files need registering in any other
-CMakeLists.txt — none of the changes added a new .cpp to the main build,
-only to the test suite.
+No other files from earlier rounds need touching again -- these four
+replace what you already have at the same paths.
 
-## How to apply these to a fresh LMMS checkout
+## Caveat
 
-1. Download/clone the real LMMS source (e.g. from your fork of
-   https://github.com/LMMS/lmms).
-2. For each file listed above, copy it into the matching path in your LMMS
-   checkout, **overwriting** the existing file at that path (all of the
-   "Changed" files already exist in LMMS; this replaces them with the
-   modified version).
-3. For the one "New" file, just add it — it doesn't exist yet.
-4. Commit and push to your fork, then open a PR or just push to a branch —
-   GitHub Actions will attempt to build it automatically.
-
-## If uploading through the GitHub website (no local git needed)
-
-For each file: navigate to that exact path in your fork on github.com,
-click the pencil/edit icon, delete the existing content, paste in the new
-file's content, and commit. For the one new test file, use "Add file → 
-Create new file" and type the full path (`tests/src/tracks/InstrumentTrackFreezeTest.cpp`)
-into the filename box — GitHub will create the folders automatically.
-
-## Important caveat
-
-These files were written and manually cross-checked against the real LMMS
-source, but were never run through an actual compiler (no build toolchain
-was available in the environment they were written in). Expect the
-possibility of small compile errors on the first CI run — if any build
-check fails (red X), copy the error text from that check's log and share it
-so it can be fixed.
+As before: written and carefully cross-checked against your actual repo
+(not assumed), but never compiled -- no build toolchain available here.
+Please build and run the tests for real; if `testAutoRefreezeAfterEditSettles`
+or `testCloneFrozenTrackPreservesFreezeState` fail, that's exactly the kind
+of thing that would tell us something in this reasoning was wrong.

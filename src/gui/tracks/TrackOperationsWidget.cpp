@@ -349,6 +349,16 @@ void TrackOperationsWidget::updateMenu()
 				"clips, and automation are kept untouched underneath and are restored "
 				"exactly by unfreezing."));
 		}
+
+		QAction* autoRefreezeAction = toMenu->addAction(tr("Auto re-freeze when stale"));
+		autoRefreezeAction->setCheckable(true);
+		autoRefreezeAction->setChecked(instrumentTrack->autoRefreezeModel()->value());
+		autoRefreezeAction->setToolTip(tr("When a frozen track becomes stale (e.g. after "
+			"adding notes), automatically re-freeze it in the background a couple of "
+			"seconds after edits settle down, instead of requiring a manual re-freeze "
+			"every time. Never triggers while the song is playing back."));
+		connect(autoRefreezeAction, &QAction::toggled, instrumentTrack,
+			[instrumentTrack](bool checked) { instrumentTrack->autoRefreezeModel()->setValue(checked); });
 	}
 	if( dynamic_cast<AutomationTrackView *>( m_trackView ) )
 	{

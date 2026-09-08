@@ -61,6 +61,8 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	Track(Track::Type::Instrument, tc),
 	MidiEventProcessor(),
 	m_frozenModel(false, this, tr("Freeze")),
+	m_autoRefreezeModel(true, this, tr("Auto re-freeze when stale")),
+	m_autoRefreezeTimer(this),
 	m_freezeCacheId(s_nextFreezeCacheId.fetch_add(1, std::memory_order_relaxed)),
 	m_midiPort(tr("unnamed_track"), Engine::audioEngine()->midiClient(), this, this),
 	m_notes(),
@@ -137,6 +139,16 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	// itself checks isFrozen() and no-ops when not applicable, so it's safe
 	// to keep this connected permanently rather than only while frozen.
 	connect(Engine::getSong(), &Song::playbackStateChanged, this, &InstrumentTrack::updateFrozenPlayback);
+
+	// Debounced auto-re-freeze: markStale() (re)starts this timer on every
+	// qualifying edit, so a burst of edits coalesces into one eventual
+	// re-freeze rather than one per edit. If playback happens to be active
+	// when the timer fires, it defers to checkAutoRefreezeAfterPlaybackStop()
+	// (connected to the same playbackStateChanged signal as above) instead
+	// of hijacking the audio engine's output device mid-listening.
+	m_autoRefreezeTimer.setSingleShot(true);
+	connect(&m_autoRefreezeTimer, &QTimer::timeout, this, &InstrumentTrack::onAutoRefreezeTimerFired);
+	connect(Engine::getSong(), &Song::playbackStateChanged, this, &InstrumentTrack::checkAutoRefreezeAfterPlaybackStop);
 
 	autoAssignMidiDevice(true);
 }
@@ -241,6 +253,7 @@ InstrumentTrack::~InstrumentTrack()
 		m_freezeRenderManager->abortProcessing();
 	}
 	stopFrozenPlayback();
+	m_autoRefreezeTimer.stop();
 
 	// De-assign midi device
 	if (s_autoAssignedTrack == this)
@@ -948,6 +961,7 @@ void InstrumentTrack::saveTrackSpecificSettings(QDomDocument& doc, QDomElement& 
 		freezeElem.setAttribute("stale", static_cast<int>(m_stale));
 		freezeElem.setAttribute("path", m_frozenSamplePath);
 		freezeElem.setAttribute("fingerprint", QString::fromLatin1(m_frozenSourceFingerprint.toHex()));
+		freezeElem.setAttribute("autorefreeze", static_cast<int>(m_autoRefreezeModel.value()));
 		thisElement.appendChild(freezeElem);
 	}
 }
@@ -1059,6 +1073,10 @@ void InstrumentTrack::loadTrackSpecificSettings( const QDomElement & thisElement
 				m_pendingLoadedFreezeStale = freezeElem.attribute("stale", "0").toInt() != 0;
 				m_frozenSamplePath = freezeElem.attribute("path");
 				m_frozenSourceFingerprint = QByteArray::fromHex(freezeElem.attribute("fingerprint").toLatin1());
+
+				// A simple preference read, not part of what needs
+				// deferring below -- no file I/O or reentrancy risk.
+				m_autoRefreezeModel.setValue(freezeElem.attribute("autorefreeze", "1").toInt() != 0);
 
 				QTimer::singleShot(0, this, &InstrumentTrack::finalizeLoadedFreezeState);
 			}
@@ -1254,6 +1272,7 @@ void InstrumentTrack::finalizeLoadedFreezeState()
 		m_stale = true;
 		m_frozenModel.setValue(true);
 		emit frozenStateChanged();
+		scheduleAutoRefreezeIfEnabled();
 		return;
 	}
 
@@ -1265,6 +1284,11 @@ void InstrumentTrack::finalizeLoadedFreezeState()
 
 	emit frozenStateChanged();
 	updateFrozenPlayback();
+
+	if (m_stale)
+	{
+		scheduleAutoRefreezeIfEnabled();
+	}
 }
 
 
@@ -1297,13 +1321,108 @@ void InstrumentTrack::connectClipToStaleTracking(Clip* clip)
 
 void InstrumentTrack::markStale()
 {
-	if (!m_frozenModel.value() || m_stale)
+	if (!m_frozenModel.value())
 	{
 		return;
 	}
-	m_stale = true;
-	stopFrozenPlayback();
-	emit frozenStateChanged();
+
+	if (!m_stale)
+	{
+		m_stale = true;
+		stopFrozenPlayback();
+		emit frozenStateChanged();
+	}
+
+	// Restart the debounce on every qualifying edit, not just the first one
+	// that flips m_stale -- otherwise a burst of edits (e.g. adding several
+	// notes in a row) would anchor the debounce window to whichever edit
+	// happened to be first, rather than coalescing the whole burst into a
+	// single eventual re-freeze once things actually settle.
+	scheduleAutoRefreezeIfEnabled();
+}
+
+
+namespace
+{
+// How long to wait, after the most recent qualifying edit, before
+// automatically re-freezing a stale track. Long enough that normal,
+// continuous editing (adding several notes in a row, adjusting a knob
+// repeatedly) coalesces into one render instead of many; short enough that
+// the CPU savings come back reasonably soon after the user actually stops.
+constexpr int AutoRefreezeDebounceMs = 2000;
+}
+
+
+// (Re)start the auto-refreeze debounce timer if the feature is enabled for
+// this track. Called on every qualifying edit while frozen (see
+// markStale()) and when a project loads with a track that was already
+// stale when saved (see finalizeLoadedFreezeState()). Restarting an
+// already-running QTimer resets its interval, which is exactly the
+// debounce behavior wanted here: only the most recent call's timing
+// matters.
+void InstrumentTrack::scheduleAutoRefreezeIfEnabled()
+{
+	if (!m_autoRefreezeModel.value())
+	{
+		return;
+	}
+
+	// A fresh edit supersedes any earlier debounce cycle, including a
+	// "waiting for playback to stop" flag left over from a previous cycle
+	// -- that flag must not be allowed to fire a re-freeze the moment
+	// playback happens to stop if the user is still actively editing.
+	m_autoRefreezeWaitingForPlaybackStop = false;
+	m_autoRefreezeTimer.start(AutoRefreezeDebounceMs);
+}
+
+
+// Fires once edits have settled for AutoRefreezeDebounceMs. Re-checks
+// everything fresh rather than trusting the state at scheduling time, since
+// the track may have been unfrozen, already started re-rendering, or had
+// auto-refreeze disabled in the meantime.
+void InstrumentTrack::onAutoRefreezeTimerFired()
+{
+	if (!m_autoRefreezeModel.value() || !m_frozenModel.value() || !m_stale || m_freezeRenderPending)
+	{
+		return;
+	}
+
+	if (Engine::getSong()->isPlaying())
+	{
+		// Freezing swaps the audio engine over to a temporary offline
+		// render device for the duration of the render -- doing that while
+		// the user is actively listening to playback would silently cut
+		// out their audio. Defer to checkAutoRefreezeAfterPlaybackStop()
+		// instead, which runs on the same playbackStateChanged signal
+		// updateFrozenPlayback() already listens to.
+		m_autoRefreezeWaitingForPlaybackStop = true;
+		return;
+	}
+
+	freeze();
+}
+
+
+// Companion to onAutoRefreezeTimerFired(): if the debounce elapsed while
+// the song was playing, this catches the moment playback actually stops
+// and performs the deferred auto-refreeze then, instead of leaving the
+// track stale indefinitely until the user notices.
+void InstrumentTrack::checkAutoRefreezeAfterPlaybackStop()
+{
+	if (!m_autoRefreezeWaitingForPlaybackStop)
+	{
+		return;
+	}
+	if (Engine::getSong()->isPlaying())
+	{
+		return;
+	}
+	m_autoRefreezeWaitingForPlaybackStop = false;
+
+	if (m_autoRefreezeModel.value() && m_frozenModel.value() && m_stale && !m_freezeRenderPending)
+	{
+		freeze();
+	}
 }
 
 
@@ -1342,6 +1461,51 @@ QString InstrumentTrack::freezeCacheDir()
 // (swapping to a different plugin) are already caught separately via the
 // instrumentChanged() -> markStale() connection, so this only needs to
 // capture parameter changes within the current instrument/effects/clips.
+namespace
+{
+// Recursively strip DOM content that exists purely for undo/redo or
+// automation-targeting bookkeeping and carries a per-instance identifier
+// assigned at construction time, not derived from actual content:
+//   - <journallingObject>/<journal> child elements, appended by
+//     JournallingObject::saveState() for every Instrument, Effect, and
+//     Clip (all of which inherit JournallingObject, via Plugin or
+//     directly), embedding that object's own journal id.
+//   - "id" attributes on automatablemodel-tagged elements, written by
+//     AutomatableModel::saveSettings() when a model is automation-targeted,
+//     referencing that model's own unique id so an AutomationClip
+//     elsewhere in the project can find it.
+// Without this, two InstrumentTrack instances with byte-identical
+// instrument/effects/clip settings -- e.g. the original and a fresh clone,
+// or the same track before saving and after reloading -- would always
+// fingerprint differently, since every underlying object gets a fresh,
+// unrelated id at construction time regardless of its actual content. That
+// would make a frozen track appear stale immediately after any clone or
+// project reload, even with zero real edits.
+void stripVolatileIdentifiers(QDomElement element)
+{
+	QDomNodeList children = element.childNodes();
+	for (int i = children.count() - 1; i >= 0; --i)
+	{
+		QDomNode child = children.at(i);
+		if (!child.isElement())
+		{
+			continue;
+		}
+		QDomElement childElem = child.toElement();
+
+		if (childElem.tagName() == "journallingObject" || childElem.tagName() == "journal")
+		{
+			element.removeChild(child);
+			continue;
+		}
+
+		childElem.removeAttribute("id");
+		stripVolatileIdentifiers(childElem);
+	}
+}
+} // namespace
+
+
 QByteArray InstrumentTrack::freezeSourceFingerprint() const
 {
 	auto* self = const_cast<InstrumentTrack*>(this);
@@ -1373,6 +1537,8 @@ QByteArray InstrumentTrack::freezeSourceFingerprint() const
 	{
 		clip->saveState(doc, root);
 	}
+
+	stripVolatileIdentifiers(root);
 
 	QCryptographicHash hash(QCryptographicHash::Sha256);
 	hash.addData(doc.toByteArray());
@@ -1464,6 +1630,12 @@ void InstrumentTrack::unfreeze()
 	}
 
 	stopFrozenPlayback();
+
+	// A pending auto-refreeze must not fire moments after the user
+	// deliberately unfroze the track -- that would be surprising and would
+	// silently undo what they just asked for.
+	m_autoRefreezeTimer.stop();
+	m_autoRefreezeWaitingForPlaybackStop = false;
 
 	// Nothing underneath was ever touched: the instrument, its clips, and
 	// all automation are exactly as they were, so restoring live playback
