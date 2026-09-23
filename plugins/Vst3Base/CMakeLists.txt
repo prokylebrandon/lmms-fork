@@ -26,9 +26,18 @@ set(VST3SDK_SOURCES
     ${VST3SDK_DIR}/base/source/timer.cpp
     ${VST3SDK_DIR}/base/source/updatehandler.cpp
 
+    # vst — IID definitions (required at link time for every Vst:: interface's ::iid)
+    ${VST3SDK_DIR}/public.sdk/source/vst/vstinitiids.cpp
+
     # vst utility (needed by hosting/module.cpp)
     ${VST3SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp
     ${VST3SDK_DIR}/public.sdk/source/vst/utility/systemtime.cpp
+
+    # base/thread — FLock used by Singleton/UpdateHandler
+    ${VST3SDK_DIR}/base/thread/source/flock.cpp
+
+    # common — StringConvert implementation (stringconvert.cpp above just wraps this)
+    ${VST3SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp
 
     # vst hosting layer
     ${VST3SDK_DIR}/public.sdk/source/vst/hosting/connectionproxy.cpp
@@ -47,13 +56,19 @@ set(VST3SDK_SOURCES
 # Platform-specific module loader
 if(LMMS_BUILD_LINUX)
     list(APPEND VST3SDK_SOURCES
-        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_linux.cpp)
+        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_linux.cpp
+        ${VST3SDK_DIR}/public.sdk/source/common/threadchecker_linux.cpp)
 elseif(LMMS_BUILD_WIN32)
     list(APPEND VST3SDK_SOURCES
-        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_win32.cpp)
+        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_win32.cpp
+        ${VST3SDK_DIR}/public.sdk/source/common/threadchecker_win32.cpp)
 elseif(LMMS_BUILD_APPLE)
     list(APPEND VST3SDK_SOURCES
         ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm)
+    set_source_files_properties(
+        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc"
+    )
 endif()
 
 # ---- vst3base shared library ----
@@ -96,3 +111,7 @@ endif()
 if(LMMS_BUILD_APPLE)
     target_link_libraries(vst3base "-framework CoreFoundation")
 endif()
+
+
+
+
