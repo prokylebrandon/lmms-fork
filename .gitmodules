@@ -50,3 +50,7 @@
 [submodule "plugins/MidiImport/portsmf"]
 	path = plugins/MidiImport/portsmf
 	url = https://github.com/portsmf/portsmf
+[submodule "plugins/Vst3Base/vst3sdk"]
+	path = plugins/Vst3Base/vst3sdk
+	url = https://github.com/steinbergmedia/vst3sdk
+	branch = v3.7.14_build_34
