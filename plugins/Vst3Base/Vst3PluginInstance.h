@@ -97,7 +97,9 @@ class SampleFrame;
  *  State:   saveState() / restoreState(bytes)
  *  Info:    name(), vendor(), category(), isInstrument()
  */
-class Vst3PluginInstance
+#include "vst3base_export.h"
+
+class VST3BASE_EXPORT Vst3PluginInstance
 {
 public:
     /// Result of load(); holds either a valid instance or an error string.
@@ -323,3 +325,4 @@ private:
 } // namespace lmms
 
 #endif // LMMS_VST3_PLUGIN_INSTANCE_H
+
