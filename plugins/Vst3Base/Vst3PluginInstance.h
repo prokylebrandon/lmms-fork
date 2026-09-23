@@ -38,6 +38,8 @@
 // Forward declarations to avoid including heavy VST3 SDK headers here
 namespace Steinberg
 {
+    class FUnknown;
+    struct IPluginFactory;
     namespace Vst
     {
         class IComponent;
@@ -49,15 +51,14 @@ namespace Steinberg
         struct ProcessContext;
         struct BusInfo;
     }
-    namespace FUnknown { struct IPluginFactory; }
-    class IPluginFactory;
 }
+
+#include "MidiEvent.h"
 
 namespace lmms
 {
 
 class SampleFrame;
-class MidiEvent;
 
 /**
  * @brief Core in-process VST3 plugin host.

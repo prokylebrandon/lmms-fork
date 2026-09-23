@@ -115,16 +115,17 @@ Vst3PluginInstance::discoverClasses(const QString& bundlePath, QString* errorOut
     const auto& factoryInfo = factory.info();
     (void)factoryInfo; // available if needed
 
-    for (int i = 0; i < factory.classCount(); ++i)
+    const auto classInfoList = factory.classInfos();
+    for (size_t i = 0; i < classInfoList.size(); ++i)
     {
-        const auto& ci = factory.classInfoAtIndex(i);
+        const auto& ci = classInfoList[i];
 
         // Only enumerate audio processor classes
         if (std::string(ci.category()) != kVstAudioEffectClass)
             continue;
 
         Vst3ClassInfo info;
-        info.classIndex    = i;
+        info.classIndex    = static_cast<int>(i);
         info.name          = QString::fromStdString(ci.name());
         info.vendor        = QString::fromStdString(factoryInfo.vendor());
         info.category      = QString::fromStdString(ci.category());
@@ -222,7 +223,7 @@ bool Vst3PluginInstance::initFactory(const QString& bundlePath, QString& error)
 bool Vst3PluginInstance::initComponent(int classIndex, QString& error)
 {
     // m_factory carries a VST3::Hosting::PluginFactory*; extract the raw ptr.
-    auto* factory = cast<VST3::Hosting::PluginFactory>(m_factory)->get();
+    auto* factory = cast<VST3::Hosting::PluginFactory>(m_factory)->get().get();
 
     Steinberg::PFactoryInfo factInfo{};
     factory->getFactoryInfo(&factInfo);
@@ -334,7 +335,7 @@ bool Vst3PluginInstance::initController(QString& error)
         return true;
     }
 
-    auto* factory = cast<VST3::Hosting::PluginFactory>(m_factory)->get();
+    auto* factory = cast<VST3::Hosting::PluginFactory>(m_factory)->get().get();
     if (!check(factory->createInstance(controllerCID,
                                        Steinberg::Vst::IEditController::iid,
                                        reinterpret_cast<void**>(&ctrl)),
