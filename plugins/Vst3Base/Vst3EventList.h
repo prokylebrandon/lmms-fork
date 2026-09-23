@@ -26,6 +26,7 @@
 #define LMMS_VST3_EVENT_LIST_H
 
 #include <pluginterfaces/vst/ivstevents.h>
+#include <pluginterfaces/vst/ivstmidicontrollers.h>
 #include <pluginterfaces/vst/vsttypes.h>
 #include "MidiEvent.h"
 
