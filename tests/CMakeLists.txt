@@ -44,4 +44,15 @@ if(LMMS_HAVE_VST3)
 	target_include_directories(Vst3BaseTest PRIVATE
 		"${CMAKE_SOURCE_DIR}/plugins/Vst3Base"
 		"${CMAKE_SOURCE_DIR}/plugins/Vst3Base/vst3sdk")
+
+if(WIN32)
+    set_tests_properties(Vst3BaseTest PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:vst3base>;$ENV{PATH}")
+elseif(APPLE)
+    set_tests_properties(Vst3BaseTest PROPERTIES
+        ENVIRONMENT "DYLD_LIBRARY_PATH=$<TARGET_FILE_DIR:vst3base>:$ENV{DYLD_LIBRARY_PATH}")
+else()
+    set_tests_properties(Vst3BaseTest PROPERTIES
+        ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:vst3base>:$ENV{LD_LIBRARY_PATH}")
+endif()
 endif()
