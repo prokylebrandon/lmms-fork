@@ -32,7 +32,7 @@
 #include <public.sdk/source/vst/hosting/module.h>
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
-#include <pluginterfaces/vst/ivstconnectionpoint.h>
+#include <pluginterfaces/vst/ivstmessage.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
