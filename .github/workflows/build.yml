@@ -407,6 +407,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
             -DTARGET_UARCH=official `
             -DWANT_QT6=ON `
+            -DWANT_VST3=ON `
             -DUSE_COMPILE_CACHE=ON `
             -DUSE_WERROR=ON `
             -DVCPKG_TARGET_TRIPLET="x64-windows" `

@@ -14,6 +14,10 @@ set(LMMS_TESTS
 	src/tracks/AutomationTrackTest.cpp
 )
 
+if(LMMS_HAVE_VST3)
+	list(APPEND LMMS_TESTS src/plugins/Vst3BaseTest.cpp)
+endif()
+
 foreach(LMMS_TEST_SRC IN LISTS LMMS_TESTS)
 	# TODO CMake 3.20: Use cmake_path
 	get_filename_component(LMMS_TEST_NAME ${LMMS_TEST_SRC} NAME_WE)
@@ -33,3 +37,11 @@ foreach(LMMS_TEST_SRC IN LISTS LMMS_TESTS)
 	target_compile_features(${LMMS_TEST_NAME} PRIVATE cxx_std_20)
 	target_compile_definitions(${LMMS_TEST_NAME} PRIVATE LMMS_TESTING)
 endforeach()
+
+if(LMMS_HAVE_VST3)
+	target_compile_definitions(Vst3BaseTest PRIVATE LMMS_HAVE_VST3)
+	target_link_libraries(Vst3BaseTest PRIVATE vst3base)
+	target_include_directories(Vst3BaseTest PRIVATE
+		"${CMAKE_SOURCE_DIR}/plugins/Vst3Base"
+		"${CMAKE_SOURCE_DIR}/plugins/Vst3Base/vst3sdk")
+endif()
