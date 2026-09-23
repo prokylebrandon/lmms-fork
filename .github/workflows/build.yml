@@ -419,6 +419,7 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Diagnose Vst3BaseTest dependencies
+        continue-on-error: true
         shell: pwsh
         run: |
           Write-Host '===== build/tests ====='

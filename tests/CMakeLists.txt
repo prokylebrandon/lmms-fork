@@ -47,7 +47,7 @@ if(LMMS_HAVE_VST3)
 
 if(WIN32)
     set_tests_properties(Vst3BaseTest PROPERTIES
-        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:vst3base>;$ENV{PATH}")
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:vst3base>")
 elseif(APPLE)
     set_tests_properties(Vst3BaseTest PROPERTIES
         ENVIRONMENT "DYLD_LIBRARY_PATH=$<TARGET_FILE_DIR:vst3base>:$ENV{DYLD_LIBRARY_PATH}")
