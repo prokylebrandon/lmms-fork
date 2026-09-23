@@ -418,21 +418,6 @@ jobs:
             ${{ steps.cache-deps.outputs.cache-hit == 'true' && 'NO' || 'YES' }}
       - name: Build
         run: cmake --build build
-      - name: Diagnose Vst3BaseTest dependencies
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Write-Host '===== build/tests ====='
-          Get-ChildItem build\tests -Include *.exe,*.dll -Recurse | Select-Object Name, FullName
-
-          Write-Host '===== build/plugins ====='
-          Get-ChildItem build\plugins -Include *.dll -Recurse | Select-Object Name, FullName
-
-          Write-Host '===== Vst3BaseTest.exe dependents ====='
-          dumpbin /dependents build\tests\Vst3BaseTest.exe
-
-          Write-Host '===== vst3base.dll dependents ====='
-          dumpbin /dependents build\plugins\vst3base.dll
       - name: Run tests
         run: |
           cd build/tests
