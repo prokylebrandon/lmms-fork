@@ -43,6 +43,7 @@
 #include "MainWindow.h"
 #include "SampleFrame.h"
 #include "Song.h"
+#include "Vst3ParameterModel.h"
 
 namespace lmms
 {
@@ -153,6 +154,15 @@ void PrestigeInstrument::closePluginLocked()
 		// load/unload/project-load are all GUI-thread operations.
 		emit pluginAboutToClose();
 
+		// Parameter models must stop reaching into the plugin, and the
+		// plugin must stop reaching into them, before either side is torn
+		// down. This is the Phase 3 "audit for stale parameter models left
+		// pointing at the previous plugin" item: doing it here, inside the
+		// one function every unload/replace/reload path already funnels
+		// through, is what makes it apply everywhere rather than needing to
+		// be repeated at each call site.
+		teardownParameterModels();
+
 		// Known rough edge (flagged for Phase 3, per the prompt's request
 		// to report rather than paper over these): this does not send an
 		// explicit all-notes-off/flush before tearing down. Stage 1 uses
@@ -253,26 +263,72 @@ bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid, QString&
 
 	m_plugin = std::move(result.instance);
 	m_classCid = resolvedCid;
+
+	// Caller (loadFile()/loadSettings()) already ran closePluginLocked()
+	// before this, so m_parameterModels is guaranteed empty here — no
+	// leftover model can end up pointed at this new m_plugin by accident.
+	buildParameterModels();
+
 	return true;
 }
 
-void PrestigeInstrument::loadFile(const QString& bundlePath)
+void PrestigeInstrument::buildParameterModels()
 {
-	QMutexLocker lock(&m_pluginMutex);
-	closePluginLocked();
-
-	m_bundlePath = bundlePath;
-	m_classCid.clear();
-
-	QString error;
-	if (!instantiatePlugin(QString(), error))
+	Q_ASSERT(m_parameterModels.empty());
+	if (!m_plugin)
 	{
-		m_lastError = error;
-		m_bundlePath.clear();
 		return;
 	}
 
-	m_lastError.clear();
+	const auto& params = m_plugin->parameters();
+	m_parameterModels.reserve(params.size());
+	for (const auto& info : params)
+	{
+		// getParameterNormalized() only returns nullopt for an id that
+		// isn't in m_plugin->parameters() at all, which can't happen here
+		// since info.id came from that same list — the fallback is just
+		// defensive, not expected to trigger.
+		const double current = m_plugin->getParameterNormalized(info.id).value_or(info.defaultNormalisedValue);
+		m_parameterModels.push_back(std::make_unique<Vst3ParameterModel>(this, m_plugin.get(), info, current));
+	}
+
+	// Wire plugin -> host edits (the plugin's own editor moving a
+	// parameter) to the matching model. LMMS -> plugin is the reverse
+	// direction and is wired inside each Vst3ParameterModel itself.
+	m_plugin->setParameterEditedCallback(
+		[this](Vst3ParamID id, double value) { onPluginParameterEdited(id, value); });
+}
+
+void PrestigeInstrument::teardownParameterModels()
+{
+	if (m_plugin)
+	{
+		// Stop the plugin from being able to reach a model mid-teardown,
+		// while m_plugin is still valid enough to call this on.
+		m_plugin->setParameterEditedCallback(nullptr);
+	}
+
+	// Tell every model its plugin is gone before destroying any of them,
+	// mirroring how Vst3PluginInstance detaches its own host-callback
+	// objects (Vst3ComponentHandlerImpl/Vst3PlugFrameImpl) before
+	// releasing them: detach-then-destroy, never the other order.
+	for (auto& model : m_parameterModels)
+	{
+		model->detachPlugin();
+	}
+	m_parameterModels.clear();
+}
+
+void PrestigeInstrument::onPluginParameterEdited(Vst3ParamID id, double normalisedValue)
+{
+	for (auto& model : m_parameterModels)
+	{
+		if (model->id() == id)
+		{
+			model->setValueFromPlugin(normalisedValue);
+			return;
+		}
+	}
 }
 
 bool PrestigeInstrument::createEditor(int* width, int* height, EditorResizeCallback onResize, QString* error)
@@ -303,6 +359,25 @@ void PrestigeInstrument::closeEditor()
 	}
 }
 
+void PrestigeInstrument::loadFile(const QString& bundlePath)
+{
+	QMutexLocker lock(&m_pluginMutex);
+	closePluginLocked();
+
+	m_bundlePath = bundlePath;
+	m_classCid.clear();
+
+	QString error;
+	if (!instantiatePlugin(QString(), error))
+	{
+		m_lastError = error;
+		m_bundlePath.clear();
+		return;
+	}
+
+	m_lastError.clear();
+}
+
 void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 {
 	QMutexLocker lock(&m_pluginMutex);
@@ -316,6 +391,20 @@ void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 		QDomElement stateNode = doc.createElement("state");
 		stateNode.appendChild(doc.createTextNode(QString::fromLatin1(state.toBase64())));
 		parent.appendChild(stateNode);
+
+		// Host-side automation/UI state, saved as a piece separate from
+		// the plugin's own state blob above (Phase 3: keep these
+		// distinct). The plugin's state has no concept of an LMMS
+		// automation clip or MIDI CC connection attached to one of its
+		// parameters, so without this block those connections would be
+		// silently lost on every project save. Keyed by VST3 parameter
+		// ID throughout, same as bundlepath/classcid above.
+		QDomElement paramsNode = doc.createElement("parameters");
+		for (auto& model : m_parameterModels)
+		{
+			model->saveSettings(doc, paramsNode);
+		}
+		parent.appendChild(paramsNode);
 	}
 }
 
@@ -352,6 +441,45 @@ void PrestigeInstrument::loadSettings(const QDomElement& thisElement)
 		if (!state.isEmpty())
 		{
 			m_plugin->restoreState(state);
+		}
+	}
+
+	// restoreState() above may have moved parameter values inside the
+	// plugin (or, for a plugin that doesn't restore every parameter from
+	// its state blob, left some of them at whatever instantiatePlugin()
+	// initialised them to). Refresh every model from the controller now,
+	// before applying the saved <parameters> block below, so the two
+	// sources of truth can't disagree and the UI can't drift from the
+	// plugin.
+	for (auto& model : m_parameterModels)
+	{
+		const auto current = m_plugin->getParameterNormalized(model->id());
+		if (current)
+		{
+			model->setValueFromPlugin(*current);
+		}
+	}
+
+	// Saved automation/controller-connection state (see saveSettings())
+	// takes precedence over the plugin's own restored values above, since
+	// it's the only place an LMMS automation clip or MIDI CC connection on
+	// a parameter is recorded at all. Matched by id, not by position: a
+	// plugin update between save and load can reorder or drop parameters.
+	const QDomElement paramsNode = thisElement.firstChildElement("parameters");
+	if (!paramsNode.isNull())
+	{
+		for (auto paramElement = paramsNode.firstChildElement("param"); !paramElement.isNull();
+			paramElement = paramElement.nextSiblingElement("param"))
+		{
+			const auto id = static_cast<Vst3ParamID>(paramElement.attribute("id").toULongLong());
+			for (auto& model : m_parameterModels)
+			{
+				if (model->id() == id)
+				{
+					model->loadSettings(paramElement);
+					break;
+				}
+			}
 		}
 	}
 

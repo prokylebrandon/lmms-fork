@@ -29,6 +29,7 @@
 #include <QPointer>
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include "Instrument.h"
 #include "InstrumentView.h"
@@ -41,6 +42,8 @@ class QWidget;
 
 namespace lmms
 {
+
+class Vst3ParameterModel;
 
 namespace gui
 {
@@ -57,8 +60,12 @@ class PrestigeView;
  * Vst3PluginInstance (Phase 1) instead of the out-of-process VstPlugin.
  *
  * Scope so far: load a bundle, resolve the first instrument-capable
- * class, play notes through it, save/restore state, and show the plugin's
- * native editor (IPlugView).  No per-parameter automation UI yet.
+ * class, play notes through it, save/restore state, show the plugin's
+ * native editor (IPlugView), and expose one Vst3ParameterModel per VST3
+ * parameter for LMMS automation (Phase 3). No parameter list UI yet, and
+ * no plugin-replacement-without-unload path yet -- loadFile() and
+ * loadSettings() still always tear down before loading, rather than
+ * following Phase 3's full 9-step replacement sequence.
  */
 class PrestigeInstrument : public Instrument
 {
@@ -101,6 +108,15 @@ public:
 	QString lastError() const { return m_lastError; }
 	QString bundlePath() const { return m_bundlePath; }
 
+	/// One model per VST3 parameter of the currently loaded plugin, in
+	/// discovery order (NOT necessarily parameter-ID order). Empty when
+	/// no plugin is loaded. For the Phase 3 parameter-management UI and
+	/// for LMMS automation to attach to; see Vst3ParameterModel.
+	const std::vector<std::unique_ptr<Vst3ParameterModel>>& parameterModels() const
+	{
+		return m_parameterModels;
+	}
+
 	// ---- Native editor (GUI thread only) ---------------------------------
 	//
 	// Thin wrappers over Vst3PluginInstance's editor API.  They deliberately
@@ -136,8 +152,33 @@ private:
 	 */
 	bool instantiatePlugin(const QString& preferredCid, QString& error);
 
+	/// Builds m_parameterModels from m_plugin->parameters() and registers
+	/// the plugin -> host edit callback. Caller must already hold
+	/// m_pluginMutex, and m_plugin must already be set (called at the end
+	/// of a successful instantiatePlugin()). m_parameterModels must be
+	/// empty on entry -- closePluginLocked() guarantees this by tearing
+	/// the previous set down first, which is also what keeps this from
+	/// ever leaving a model pointed at a plugin that replaced it (Phase 3:
+	/// audited stale-model source of crash-on-automate).
+	void buildParameterModels();
+
+	/// Detaches and destroys m_parameterModels, and clears the plugin's
+	/// edit callback. Caller must already hold m_pluginMutex. Must run,
+	/// in this order, before m_plugin itself is torn down (see
+	/// closePluginLocked()): the callback is cleared while m_plugin is
+	/// still valid, then every model is told its plugin is gone before
+	/// any model is actually destroyed.
+	void teardownParameterModels();
+
+	/// Vst3PluginInstance::ParameterEditedCallback, registered on m_plugin
+	/// by buildParameterModels(). Looks up the model by id() (VST3
+	/// parameter ID, not position) and forwards via
+	/// Vst3ParameterModel::setValueFromPlugin().
+	void onPluginParameterEdited(Vst3ParamID id, double normalisedValue);
+
 	QMutex m_pluginMutex;
 	std::unique_ptr<Vst3PluginInstance> m_plugin;
+	std::vector<std::unique_ptr<Vst3ParameterModel>> m_parameterModels;
 
 	// Persisted identity. m_classCid is authoritative for project reload;
 	// filenames/paths can move, the VST3 class UID shouldn't.
@@ -154,7 +195,7 @@ namespace gui
 {
 
 /// View: load/browse control, name + vendor display, unload, native editor
-/// toggle, error display.  No parameter list yet.
+/// toggle, error display.  No parameter list yet (Phase 3).
 class PrestigeView : public InstrumentView
 {
 	Q_OBJECT
