@@ -431,3 +431,13 @@ void PrestigeView::updateLabels()
 } // namespace gui
 
 } // namespace lmms
+
+extern "C"
+{
+
+PLUGIN_EXPORT Plugin * lmms_plugin_main( Model * m, void * )
+{
+	return new lmms::PrestigeInstrument( static_cast<lmms::InstrumentTrack *>( m ) );
+}
+
+}
