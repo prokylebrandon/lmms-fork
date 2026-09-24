@@ -7,7 +7,8 @@ include(BuildPlugin)
 BUILD_PLUGIN(prestige
     Prestige.cpp
     Vst3ParameterModel.cpp
-    MOCFILES Prestige.h Vst3ParameterModel.h
+    Vst3ParameterWindow.cpp
+    MOCFILES Prestige.h Vst3ParameterModel.h Vst3ParameterWindow.h
     EMBEDDED_RESOURCES logo.svg
 )
 

@@ -24,15 +24,20 @@
 
 #include "Prestige.h"
 
+#include <QDebug>
+#include <QDomDocument>
 #include <QDomElement>
 #include <QEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QMutexLocker>
 #include <QObject>
 #include <QPushButton>
+#include <QTextStream>
+#include <QTimer>
 
 #include "AudioEngine.h"
 #include "embed.h"
@@ -102,7 +107,11 @@ PrestigeInstrument::~PrestigeInstrument()
 	// Vestige.cpp before relying on this in anything beyond local testing.
 	Engine::audioEngine()->removePlayHandlesOfTypes(instrumentTrack(), PlayHandle::Type::InstrumentPlayHandle);
 
-	unloadPlugin();
+	// No status signals here: the object is going away, and closePluginLocked()
+	// already announces pluginAboutToClose() to anything holding the plugin.
+	QMutexLocker lock(&m_pluginMutex);
+	closePluginLocked();
+	resetRecordLocked();
 }
 
 void PrestigeInstrument::play(SampleFrame* workingBuffer)
@@ -151,7 +160,9 @@ void PrestigeInstrument::closePluginLocked()
 		// An open editor window holds a native child of the view we are about
 		// to destroy.  Let the GUI close it (detaching the plugin's IPlugView
 		// first) before the plugin goes away.  Runs on the GUI thread: plugin
-		// load/unload/project-load are all GUI-thread operations.
+		// load/unload/project-load are all GUI-thread operations. The
+		// parameter window listens too and unbinds its knob from the models
+		// below, which are still alive at this point.
 		emit pluginAboutToClose();
 
 		// Parameter models must stop reaching into the plugin, and the
@@ -176,25 +187,59 @@ void PrestigeInstrument::closePluginLocked()
 	}
 }
 
-void PrestigeInstrument::unloadPlugin()
+void PrestigeInstrument::resetRecordLocked()
 {
-	QMutexLocker lock(&m_pluginMutex);
-	closePluginLocked();
 	m_bundlePath.clear();
 	m_classCid.clear();
+	m_savedName.clear();
+	m_savedVendor.clear();
 	m_lastError.clear();
+	m_warning.clear();
+	m_retainedXml.clear();
+	m_status = LoadStatus::Empty;
+	m_uiEditorOpen = false;
+	m_uiParametersOpen = false;
 }
 
-bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid, QString& error)
+void PrestigeInstrument::unloadPlugin()
 {
+	{
+		QMutexLocker lock(&m_pluginMutex);
+		closePluginLocked();
+		resetRecordLocked();
+	}
+	emit parameterModelsChanged();
+	emit pluginStatusChanged();
+}
+
+bool PrestigeInstrument::fail(LoadStatus status, const QString& userMessage)
+{
+	m_status = status;
+	m_lastError = userMessage;
+	return false;
+}
+
+bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid)
+{
+	// User-facing messages are deliberately short and non-technical. The
+	// detail that helps a developer (paths, VST3 result codes, exception
+	// text from the loader) goes to the debug log via qWarning().
+
+	// QFileInfo::exists() is true for both forms of a .vst3: a single file
+	// (Windows legacy) and a bundle directory (macOS, Linux, modern
+	// Windows). Nothing here assumes a particular extension or layout.
+	if (!QFileInfo::exists(m_bundlePath))
+	{
+		qWarning("PRESTIGE: plugin bundle does not exist: %s", qPrintable(m_bundlePath));
+		return fail(LoadStatus::Missing, tr("The VST3 plugin could not be found."));
+	}
+
 	QString discoverError;
 	const auto classes = Vst3PluginInstance::discoverClasses(m_bundlePath, &discoverError);
 	if (classes.empty())
 	{
-		error = discoverError.isEmpty()
-			? tr("No VST3 classes found in bundle")
-			: discoverError;
-		return false;
+		qWarning("PRESTIGE: no VST3 classes in %s (%s)", qPrintable(m_bundlePath), qPrintable(discoverError));
+		return fail(LoadStatus::LoadFailed, tr("The VST3 plugin could not be loaded."));
 	}
 
 	int resolvedIndex = -1;
@@ -202,6 +247,11 @@ bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid, QString&
 
 	if (!preferredCid.isEmpty())
 	{
+		// Strict match on the recorded class UID. A bundle that resolves but
+		// no longer contains that class (plugin updated, class removed) is
+		// reported rather than silently replaced by whatever instrument
+		// happens to be first: substituting a different sound under
+		// someone's saved automation and state is worse than saying so.
 		for (const auto& ci : classes)
 		{
 			if (ci.cid == preferredCid)
@@ -211,22 +261,18 @@ bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid, QString&
 				break;
 			}
 		}
-		// preferredCid was given but not found: this is what "missing
-		// plugin" means for browse-to-load (see Phase 2 handoff notes) —
-		// the bundle path resolves but the specific class inside it no
-		// longer does (plugin updated, class removed, etc). Falls through
-		// to the auto-pick below rather than failing outright, so a
-		// reopened project at least loads *a* sound rather than nothing;
-		// this is a Stage 1 simplification, not a considered design
-		// choice — Phase 3 should decide whether silently substituting a
-		// different class is actually the right behavior here.
+		if (resolvedIndex < 0)
+		{
+			qWarning("PRESTIGE: class %s not found in %s", qPrintable(preferredCid), qPrintable(m_bundlePath));
+			return fail(LoadStatus::ClassNotFound,
+				tr("The plugin saved in this project is no longer available in this file."));
+		}
 	}
-
-	if (resolvedIndex < 0)
+	else
 	{
-		// Multi-instrument bundles get no selection UI in Stage 1 (the
-		// original design note is explicit that this needs one
-		// eventually) — first instrument-capable class wins.
+		// Multi-instrument bundles get no selection UI yet (the original
+		// design note is explicit that this needs one eventually) — first
+		// instrument-capable class wins.
 		for (const auto& ci : classes)
 		{
 			if (ci.isInstrument)
@@ -236,12 +282,11 @@ bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid, QString&
 				break;
 			}
 		}
-	}
-
-	if (resolvedIndex < 0)
-	{
-		error = tr("No instrument class found in bundle");
-		return false;
+		if (resolvedIndex < 0)
+		{
+			qWarning("PRESTIGE: no instrument class in %s", qPrintable(m_bundlePath));
+			return fail(LoadStatus::NoInstrument, tr("No compatible instrument class was found."));
+		}
 	}
 
 	const double sampleRate = Engine::audioEngine()->outputSampleRate();
@@ -250,21 +295,25 @@ bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid, QString&
 	auto result = Vst3PluginInstance::load(m_bundlePath, resolvedIndex, sampleRate, blockSize);
 	if (!result)
 	{
-		error = result.error;
-		return false;
+		qWarning("PRESTIGE: load failed for %s: %s", qPrintable(m_bundlePath), qPrintable(result.error));
+		return fail(LoadStatus::LoadFailed, tr("The VST3 plugin could not be loaded."));
 	}
 
 	QString startError;
 	if (!result.instance->startProcessing(&startError))
 	{
-		error = startError;
-		return false;
+		qWarning("PRESTIGE: startProcessing failed for %s: %s", qPrintable(m_bundlePath), qPrintable(startError));
+		return fail(LoadStatus::InitFailed, tr("Plugin initialization failed."));
 	}
 
 	m_plugin = std::move(result.instance);
 	m_classCid = resolvedCid;
+	m_savedName = m_plugin->name();
+	m_savedVendor = m_plugin->vendor();
+	m_status = LoadStatus::Loaded;
+	m_lastError.clear();
 
-	// Caller (loadFile()/loadSettings()) already ran closePluginLocked()
+	// Callers (loadFile()/loadSettings()) already ran closePluginLocked()
 	// before this, so m_parameterModels is guaranteed empty here — no
 	// leftover model can end up pointed at this new m_plugin by accident.
 	buildParameterModels();
@@ -362,43 +411,142 @@ void PrestigeInstrument::closeEditor()
 void PrestigeInstrument::loadFile(const QString& bundlePath)
 {
 	QMutexLocker lock(&m_pluginMutex);
+
+	// If the project recorded a plugin we could not run, its saved data is
+	// being retained. Remember that identity so a failed browse (wrong file,
+	// unloadable file) does not make the record of the missing plugin vanish.
+	const bool hadRetained = !m_retainedXml.isEmpty();
+	const QString previousPath = m_bundlePath;
+	const QString previousCid = m_classCid;
+
 	closePluginLocked();
 
 	m_bundlePath = bundlePath;
 	m_classCid.clear();
+	m_warning.clear();
 
-	QString error;
-	if (!instantiatePlugin(QString(), error))
+	if (!instantiatePlugin(QString()))
 	{
-		m_lastError = error;
-		m_bundlePath.clear();
+		if (hadRetained)
+		{
+			m_bundlePath = previousPath;
+			m_classCid = previousCid;
+		}
+		else
+		{
+			m_bundlePath.clear();
+			m_classCid.clear();
+			m_savedName.clear();
+			m_savedVendor.clear();
+		}
+		emit pluginStatusChanged();
 		return;
 	}
 
-	m_lastError.clear();
+	// A plugin that was recorded but missing, and has now been located: if
+	// the chosen bundle contains the very class the project recorded, put
+	// the project's saved settings for it back ("relink"). A different
+	// plugin replaces them, deliberately (the view asks before that
+	// happens).
+	bool relinked = false;
+	if (hadRetained)
+	{
+		if (m_classCid == previousCid)
+		{
+			QDomDocument retained;
+			if (retained.setContent(m_retainedXml))
+			{
+				const QDomElement root = retained.documentElement();
+				if (root.attribute("version", "0").toInt() <= kSaveVersion)
+				{
+					applySavedElement(root);
+					relinked = true;
+				}
+			}
+		}
+		m_retainedXml.clear();
+	}
+
+	emit parameterModelsChanged();
+	emit pluginStatusChanged();
+	if (relinked)
+	{
+		emit uiRestoreRequested();
+	}
+}
+
+void PrestigeInstrument::retainElement(const QDomElement& element)
+{
+	m_retainedXml.clear();
+	QTextStream stream(&m_retainedXml);
+	element.save(stream, -1); // -1: no added whitespace, so text nodes (base64 state) round-trip exactly
 }
 
 void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 {
 	QMutexLocker lock(&m_pluginMutex);
 
+	// A recorded plugin that is not running (missing, failed, or saved by a
+	// newer PRESTIGE): write back exactly what was loaded, so opening and
+	// re-saving a project on a machine without the plugin loses nothing.
+	if (!m_plugin && !m_retainedXml.isEmpty())
+	{
+		QDomDocument retained;
+		if (retained.setContent(m_retainedXml))
+		{
+			const QDomElement root = retained.documentElement();
+
+			const QDomNamedNodeMap attributes = root.attributes();
+			for (int i = 0; i < attributes.length(); ++i)
+			{
+				const QDomAttr attribute = attributes.item(i).toAttr();
+				// JournallingObject::saveState() has already set "id" (and
+				// anything else it owns) on parent; only fill in the gaps.
+				if (!parent.hasAttribute(attribute.name()))
+				{
+					parent.setAttribute(attribute.name(), attribute.value());
+				}
+			}
+			for (QDomNode child = root.firstChild(); !child.isNull(); child = child.nextSibling())
+			{
+				parent.appendChild(doc.importNode(child, true));
+			}
+			return;
+		}
+		// Unparseable retained data cannot happen for something we wrote
+		// ourselves; fall through and save the recorded identity below.
+	}
+
+	// --- piece 1: format version -----------------------------------------
+	parent.setAttribute("version", kSaveVersion);
+
+	// --- piece 2: plugin identity (bundle location + class UID) ------------
 	parent.setAttribute("bundlepath", m_bundlePath);
 	parent.setAttribute("classcid", m_classCid);
+	// Name/vendor are only for naming the plugin to the user if it is
+	// missing when the project is next opened; identity is path + cid.
+	parent.setAttribute("pluginname", m_savedName);
+	parent.setAttribute("pluginvendor", m_savedVendor);
 
 	if (m_plugin)
 	{
+		// --- piece 3: plugin-owned state -----------------------------------
+		// Vst3PluginInstance::saveState() currently packs component and
+		// controller state into ONE blob, so that is what is stored; the
+		// "format" attribute leaves room to store them separately later
+		// without a stored blob being misread.
 		const QByteArray state = m_plugin->saveState();
 		QDomElement stateNode = doc.createElement("state");
+		stateNode.setAttribute("format", "combined");
 		stateNode.appendChild(doc.createTextNode(QString::fromLatin1(state.toBase64())));
 		parent.appendChild(stateNode);
 
-		// Host-side automation/UI state, saved as a piece separate from
-		// the plugin's own state blob above (Phase 3: keep these
-		// distinct). The plugin's state has no concept of an LMMS
-		// automation clip or MIDI CC connection attached to one of its
-		// parameters, so without this block those connections would be
-		// silently lost on every project save. Keyed by VST3 parameter
-		// ID throughout, same as bundlepath/classcid above.
+		// --- piece 4: host-side parameter/automation state ------------------
+		// Separate from the plugin's own state blob above. The plugin's state
+		// has no concept of an LMMS automation clip or MIDI CC connection
+		// attached to one of its parameters, so without this block those
+		// connections would be silently lost on every project save. Keyed by
+		// VST3 parameter ID throughout, same as bundlepath/classcid above.
 		QDomElement paramsNode = doc.createElement("parameters");
 		for (auto& model : m_parameterModels)
 		{
@@ -406,41 +554,32 @@ void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 		}
 		parent.appendChild(paramsNode);
 	}
+
+	// --- piece 5: UI state ---------------------------------------------------
+	QDomElement uiNode = doc.createElement("ui");
+	uiNode.setAttribute("editor", m_uiEditorOpen ? 1 : 0);
+	uiNode.setAttribute("parameters", m_uiParametersOpen ? 1 : 0);
+	parent.appendChild(uiNode);
 }
 
-void PrestigeInstrument::loadSettings(const QDomElement& thisElement)
+void PrestigeInstrument::applySavedElement(const QDomElement& element)
 {
-	QMutexLocker lock(&m_pluginMutex);
-	closePluginLocked();
-
-	const QString path = thisElement.attribute("bundlepath");
-	const QString cid = thisElement.attribute("classcid");
-	if (path.isEmpty())
+	if (!m_plugin)
 	{
 		return;
 	}
 
-	m_bundlePath = path;
-	m_classCid.clear();
-
-	QString error;
-	if (!instantiatePlugin(cid, error))
-	{
-		// Bundle path no longer resolves at all (not just the class
-		// inside it) — keep the recorded path/cid in the project rather
-		// than discarding them, so a manual re-browse or a future
-		// Phase 3 "relink" flow still has something to work with.
-		m_lastError = error;
-		return;
-	}
-
-	const QDomElement stateNode = thisElement.firstChildElement("state");
+	// Plugin-owned state.
+	const QDomElement stateNode = element.firstChildElement("state");
 	if (!stateNode.isNull())
 	{
 		const QByteArray state = QByteArray::fromBase64(stateNode.text().toLatin1());
-		if (!state.isEmpty())
+		if (!state.isEmpty() && !m_plugin->restoreState(state))
 		{
-			m_plugin->restoreState(state);
+			// The plugin stays loaded and usable, at whatever state
+			// instantiatePlugin() left it in; say so rather than pretend.
+			qWarning("PRESTIGE: restoreState() failed for %s", qPrintable(m_plugin->name()));
+			m_warning = tr("Plugin state could not be restored.");
 		}
 	}
 
@@ -465,7 +604,7 @@ void PrestigeInstrument::loadSettings(const QDomElement& thisElement)
 	// it's the only place an LMMS automation clip or MIDI CC connection on
 	// a parameter is recorded at all. Matched by id, not by position: a
 	// plugin update between save and load can reorder or drop parameters.
-	const QDomElement paramsNode = thisElement.firstChildElement("parameters");
+	const QDomElement paramsNode = element.firstChildElement("parameters");
 	if (!paramsNode.isNull())
 	{
 		for (auto paramElement = paramsNode.firstChildElement("param"); !paramElement.isNull();
@@ -483,7 +622,78 @@ void PrestigeInstrument::loadSettings(const QDomElement& thisElement)
 		}
 	}
 
-	m_lastError.clear();
+	// UI state. Only recorded here; the view acts on it when it receives
+	// uiRestoreRequested().
+	const QDomElement uiNode = element.firstChildElement("ui");
+	m_uiEditorOpen = uiNode.attribute("editor") == QLatin1String("1");
+	m_uiParametersOpen = uiNode.attribute("parameters") == QLatin1String("1");
+}
+
+void PrestigeInstrument::loadSettings(const QDomElement& thisElement)
+{
+	QMutexLocker lock(&m_pluginMutex);
+
+	closePluginLocked();
+	resetRecordLocked();
+
+	// Projects saved before versioning existed carry no attribute: version
+	// 0. Its layout is version 1 minus name/vendor/ui, so it needs no
+	// migration step, only tolerance for the missing pieces.
+	const int version = thisElement.attribute("version", "0").toInt();
+
+	const QString path = thisElement.attribute("bundlepath");
+	const QString cid = thisElement.attribute("classcid");
+
+	if (version > kSaveVersion)
+	{
+		// Saved by a newer PRESTIGE than this one. Do not guess at a layout
+		// that may have changed: keep the element exactly as found (it is
+		// written back unchanged on save) and say so.
+		qWarning("PRESTIGE: project saved with format version %d, this build understands up to %d",
+			version, kSaveVersion);
+		m_bundlePath = path;
+		m_classCid = cid;
+		m_savedName = thisElement.attribute("pluginname");
+		m_savedVendor = thisElement.attribute("pluginvendor");
+		retainElement(thisElement);
+		fail(LoadStatus::UnsupportedVersion,
+			tr("This project was saved by a newer version of PRESTIGE. The plugin was not loaded "
+				"and its saved data has been left unchanged."));
+		emit parameterModelsChanged();
+		emit pluginStatusChanged();
+		return;
+	}
+
+	if (path.isEmpty())
+	{
+		emit parameterModelsChanged();
+		emit pluginStatusChanged();
+		return;
+	}
+
+	m_bundlePath = path;
+	m_classCid = cid;
+	m_savedName = thisElement.attribute("pluginname");
+	m_savedVendor = thisElement.attribute("pluginvendor");
+
+	if (!instantiatePlugin(cid))
+	{
+		// Keep the recorded path/cid/name AND the project's saved data for
+		// this plugin: the recorded identity stays in place (instantiatePlugin()
+		// only overwrites it on success), and the element is retained
+		// verbatim so re-saving without the plugin present does not destroy
+		// its state, parameters or automation connections.
+		retainElement(thisElement);
+		emit parameterModelsChanged();
+		emit pluginStatusChanged();
+		return;
+	}
+
+	applySavedElement(thisElement);
+
+	emit parameterModelsChanged();
+	emit pluginStatusChanged();
+	emit uiRestoreRequested();
 }
 
 QString PrestigeInstrument::nodeName() const
@@ -506,8 +716,8 @@ namespace gui
 namespace
 {
 
-/// Watches the editor's SubWindow for its Close event so the plugin view can
-/// be detached BEFORE the native window underneath it is destroyed.  Never
+/// Watches a SubWindow for its Close event so a callback can run BEFORE the
+/// window goes away (for the editor: detach the plugin view first). Never
 /// consumes the event: normal close handling still runs afterwards.
 class EditorCloseFilter : public QObject
 {
@@ -557,6 +767,11 @@ PrestigeView::PrestigeView(Instrument* instrument, QWidget* parent) :
 
 	m_nameLabel = new QLabel(this);
 	m_vendorLabel = new QLabel(this);
+
+	m_warningLabel = new QLabel(this);
+	m_warningLabel->setStyleSheet("color: #c80;");
+	m_warningLabel->setWordWrap(true);
+
 	m_errorLabel = new QLabel(this);
 	m_errorLabel->setStyleSheet("color: red;");
 	m_errorLabel->setWordWrap(true);
@@ -570,28 +785,57 @@ PrestigeView::PrestigeView(Instrument* instrument, QWidget* parent) :
 	m_editorButton = new QPushButton(tr("Show editor"), this);
 	connect(m_editorButton, &QPushButton::clicked, this, &PrestigeView::toggleEditor);
 
+	m_paramsButton = new QPushButton(tr("Parameters..."), this);
+	connect(m_paramsButton, &QPushButton::clicked, this, &PrestigeView::toggleParameters);
+
 	layout->addWidget(m_nameLabel, 0, 0, 1, 2);
 	layout->addWidget(m_vendorLabel, 1, 0, 1, 2);
 	layout->addWidget(m_browseButton, 2, 0);
 	layout->addWidget(m_unloadButton, 2, 1);
-	layout->addWidget(m_editorButton, 3, 0, 1, 2);
-	layout->addWidget(m_errorLabel, 4, 0, 1, 2);
-	layout->setRowStretch(5, 1);
+	layout->addWidget(m_editorButton, 3, 0);
+	layout->addWidget(m_paramsButton, 3, 1);
+	layout->addWidget(m_warningLabel, 4, 0, 1, 2);
+	layout->addWidget(m_errorLabel, 5, 0, 1, 2);
+	layout->setRowStretch(6, 1);
 
-	// The editor window must close before the plugin it shows is destroyed
-	// (unload, replace, or project reload).
 	if (m_pi)
 	{
+		// The editor window must close before the plugin it shows is
+		// destroyed (unload, replace, or project reload), and the parameter
+		// window must let go of the parameter models before they die.
 		connect(m_pi.data(), &PrestigeInstrument::pluginAboutToClose,
-			this, &PrestigeView::closeEditorWindow);
+			this, &PrestigeView::onPluginAboutToClose);
+		connect(m_pi.data(), &PrestigeInstrument::parameterModelsChanged,
+			this, &PrestigeView::onParameterModelsChanged);
+		connect(m_pi.data(), &PrestigeInstrument::pluginStatusChanged,
+			this, &PrestigeView::updateLabels);
+		connect(m_pi.data(), &PrestigeInstrument::uiRestoreRequested,
+			this, &PrestigeView::onRestoreUi);
 	}
 
 	updateLabels();
+
+	// A view created after the plugin was already loaded (the usual order
+	// is the other way round during project load; both happen).
+	onRestoreUi();
 }
 
 PrestigeView::~PrestigeView()
 {
 	closeEditorWindow();
+
+	if (m_paramsWidget)
+	{
+		// Unbind the inspector knob from whatever model it is showing before
+		// the window (and, possibly, the models) go away.
+		m_paramsWidget->clearParameters(QString());
+	}
+	if (m_paramsWindow)
+	{
+		m_paramsWindow->hide();
+		m_paramsWindow->deleteLater();
+		m_paramsWindow.clear();
+	}
 }
 
 void PrestigeView::browsePlugin()
@@ -599,6 +843,30 @@ void PrestigeView::browsePlugin()
 	if (!m_pi)
 	{
 		return;
+	}
+
+	// Choosing a plugin while the project holds saved settings for a
+	// missing one: say what will happen to them BEFORE it happens.
+	if (m_pi->hasRetainedState())
+	{
+		QString text;
+		if (m_pi->status() == PrestigeInstrument::LoadStatus::UnsupportedVersion)
+		{
+			text = tr("This project was saved by a newer version of PRESTIGE. Loading a plugin here "
+				"replaces its saved data. Continue?");
+		}
+		else
+		{
+			const QString name = m_pi->savedPluginName().isEmpty()
+				? tr("the missing plugin")
+				: m_pi->savedPluginName();
+			text = tr("This project has saved settings for %1. They are restored only if you choose "
+				"that same plugin; choosing a different plugin replaces them. Continue?").arg(name);
+		}
+		if (QMessageBox::question(this, tr("Choose VST3 plugin"), text) != QMessageBox::Yes)
+		{
+			return;
+		}
 	}
 
 	// NOT verified against another QFileDialog precedent in this codebase
@@ -644,6 +912,20 @@ void PrestigeView::unloadPlugin()
 	{
 		return;
 	}
+
+	// Unloading a missing plugin throws away the settings the project has
+	// been keeping for it. That is the one action here that destroys saved
+	// work, so it asks first.
+	if (m_pi->hasRetainedState())
+	{
+		const auto answer = QMessageBox::question(this, tr("Remove plugin"),
+			tr("Unloading removes the saved settings this project holds for the missing plugin. Continue?"));
+		if (answer != QMessageBox::Yes)
+		{
+			return;
+		}
+	}
+
 	m_pi->unloadPlugin();
 	updateLabels();
 }
@@ -653,14 +935,78 @@ void PrestigeView::toggleEditor()
 	if (m_editorWindow)
 	{
 		closeEditorWindow();
+		if (m_pi) { m_pi->setEditorWanted(false); }
 	}
 	else
 	{
-		openEditorWindow();
+		openEditorWindow(true);
 	}
 }
 
-void PrestigeView::openEditorWindow()
+void PrestigeView::toggleParameters()
+{
+	if (m_paramsWindow && m_paramsWindow->isVisible())
+	{
+		m_paramsWindow->hide();
+		if (m_pi) { m_pi->setParametersWindowWanted(false); }
+	}
+	else
+	{
+		openParametersWindow();
+	}
+}
+
+void PrestigeView::onPluginAboutToClose()
+{
+	closeEditorWindow();
+
+	// The models are still alive here (see PrestigeInstrument::
+	// closePluginLocked()); drop every reference to them now.
+	if (m_paramsWidget)
+	{
+		m_paramsWidget->clearParameters(tr("No plugin loaded."));
+	}
+}
+
+void PrestigeView::onParameterModelsChanged()
+{
+	refreshParameterWindow();
+}
+
+void PrestigeView::onRestoreUi()
+{
+	if (!m_pi || !m_pi->isPluginLoaded())
+	{
+		return;
+	}
+
+	const bool wantEditor = m_pi->editorWanted();
+	const bool wantParameters = m_pi->parametersWindowWanted();
+	if (!wantEditor && !wantParameters)
+	{
+		return;
+	}
+
+	// Deferred: this can be reached from the middle of a project load, when
+	// the main window is not necessarily ready to receive new sub-windows.
+	QTimer::singleShot(0, this, [this, wantEditor, wantParameters]()
+	{
+		if (!m_pi || !m_pi->isPluginLoaded())
+		{
+			return;
+		}
+		if (wantEditor && !m_editorWindow)
+		{
+			openEditorWindow(false);
+		}
+		if (wantParameters && !(m_paramsWindow && m_paramsWindow->isVisible()))
+		{
+			openParametersWindow();
+		}
+	});
+}
+
+void PrestigeView::openEditorWindow(bool userInitiated)
 {
 	if (!m_pi || !m_pi->isPluginLoaded())
 	{
@@ -691,8 +1037,12 @@ void PrestigeView::openEditorWindow()
 
 	if (!created)
 	{
-		QMessageBox::information(this, tr("PRESTIGE"),
-			error.isEmpty() ? tr("Plugin editor is unavailable") : error);
+		m_pi->setEditorWanted(false);
+		if (userInitiated)
+		{
+			QMessageBox::information(this, tr("PRESTIGE"),
+				error.isEmpty() ? tr("Plugin editor is unavailable") : error);
+		}
 		return;
 	}
 
@@ -719,17 +1069,26 @@ void PrestigeView::openEditorWindow()
 	if (!m_pi->attachEditor(reinterpret_cast<void*>(host->winId()), &error))
 	{
 		closeEditorWindow();
-		QMessageBox::warning(this, tr("VST3 editor"),
-			error.isEmpty() ? tr("Plugin editor is unavailable") : error);
+		m_pi->setEditorWanted(false);
+		if (userInitiated)
+		{
+			QMessageBox::warning(this, tr("VST3 editor"),
+				error.isEmpty() ? tr("Plugin editor is unavailable") : error);
+		}
 		return;
 	}
 
 	// If the user closes the window with its own close button, detach the
-	// plugin view first.
-	window->installEventFilter(new EditorCloseFilter(window, [this]() { closeEditorWindow(); }));
+	// plugin view first, and remember that the user closed it.
+	window->installEventFilter(new EditorCloseFilter(window, [this]()
+	{
+		closeEditorWindow();
+		if (m_pi) { m_pi->setEditorWanted(false); }
+	}));
 
 	window->show();
 	m_editorButton->setText(tr("Hide editor"));
+	m_pi->setEditorWanted(true);
 }
 
 void PrestigeView::closeEditorWindow()
@@ -759,6 +1118,70 @@ void PrestigeView::closeEditorWindow()
 	}
 }
 
+void PrestigeView::openParametersWindow()
+{
+	if (!m_pi || !m_pi->isPluginLoaded())
+	{
+		return;
+	}
+
+	if (!m_paramsWindow)
+	{
+		auto* widget = new Vst3ParameterWindow;
+
+		// Same wrapper as the native editor window. It stays alive (hidden)
+		// when the user closes it, so its search text and selection survive
+		// closing and reopening; ~PrestigeView() destroys it.
+		SubWindow* window = getGUI()->mainWindow()->addWindowedWidget(widget);
+		window->setAttribute(Qt::WA_DeleteOnClose, false);
+		window->installEventFilter(new EditorCloseFilter(window, [this]()
+		{
+			if (m_pi) { m_pi->setParametersWindowWanted(false); }
+		}));
+
+		m_paramsWidget = widget;
+		m_paramsWindow = window;
+		refreshParameterWindow();
+	}
+
+	m_paramsWindow->show();
+	m_paramsWindow->raise();
+	m_pi->setParametersWindowWanted(true);
+}
+
+void PrestigeView::refreshParameterWindow()
+{
+	if (!m_paramsWidget || !m_pi)
+	{
+		return;
+	}
+
+	std::vector<Vst3ParameterModel*> models;
+	models.reserve(m_pi->parameterModels().size());
+	for (const auto& model : m_pi->parameterModels())
+	{
+		models.push_back(model.get());
+	}
+
+	QString emptyMessage;
+	if (!m_pi->isPluginLoaded())
+	{
+		emptyMessage = tr("No plugin loaded.");
+	}
+	else if (models.empty())
+	{
+		emptyMessage = tr("This plugin exposes no parameters.");
+	}
+
+	m_paramsWidget->setParameters(models, emptyMessage);
+
+	if (m_paramsWindow)
+	{
+		const QString name = m_pi->pluginName();
+		m_paramsWindow->setWindowTitle(name.isEmpty() ? tr("PRESTIGE - Parameters") : tr("%1 - Parameters").arg(name));
+	}
+}
+
 void PrestigeView::updateLabels()
 {
 	if (!m_pi)
@@ -767,13 +1190,46 @@ void PrestigeView::updateLabels()
 	}
 
 	const bool loaded = m_pi->isPluginLoaded();
+	const bool hasSaved = m_pi->hasSavedPlugin();
+
 	m_editorButton->setEnabled(loaded);
+	m_paramsButton->setEnabled(loaded);
+	m_unloadButton->setEnabled(loaded || hasSaved);
+
+	const QString warning = m_pi->warning();
+	m_warningLabel->setText(warning);
+	m_warningLabel->setVisible(!warning.isEmpty());
 
 	if (loaded)
 	{
 		m_nameLabel->setText(m_pi->pluginName());
 		m_vendorLabel->setText(m_pi->pluginVendor());
 		m_errorLabel->clear();
+	}
+	else if (hasSaved)
+	{
+		// A plugin is recorded in the project but is not running: name it,
+		// say why, and say what is being kept.
+		QString name = m_pi->savedPluginName();
+		if (name.isEmpty())
+		{
+			name = QFileInfo(m_pi->bundlePath()).completeBaseName();
+		}
+		m_nameLabel->setText(tr("Plugin not loaded: %1").arg(name));
+		m_vendorLabel->setText(m_pi->savedPluginVendor());
+
+		QString message = m_pi->lastError();
+		if (m_pi->status() == PrestigeInstrument::LoadStatus::Missing)
+		{
+			message += QLatin1Char('\n') + tr("Expected at: %1").arg(m_pi->bundlePath());
+		}
+		if (m_pi->hasRetainedState()
+			&& m_pi->status() != PrestigeInstrument::LoadStatus::UnsupportedVersion)
+		{
+			message += QLatin1Char('\n')
+				+ tr("Its saved settings are kept in this project. Use Browse... to locate it again.");
+		}
+		m_errorLabel->setText(message.trimmed());
 	}
 	else
 	{
