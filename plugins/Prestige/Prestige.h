@@ -83,10 +83,10 @@ public:
 	 * (that's flagged, not solved, here — see the prompt's note that a
 	 * multi-instrument bundle needs a real picker eventually).
 	 *
-	 * Returns true on success. On failure, lastError() holds a displayable
-	 * message and no plugin is loaded.
+	 * Overrides Plugin::loadFile (void return). On failure, lastError()
+	 * holds a displayable message and isPluginLoaded() returns false.
 	 */
-	bool loadFile(const QString& bundlePath);
+	void loadFile(const QString& bundlePath) override;
 
 	/// Stop and destroy the currently loaded plugin, if any. Safe to call
 	/// with nothing loaded.

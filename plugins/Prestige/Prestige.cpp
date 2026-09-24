@@ -234,7 +234,7 @@ bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid, QString&
 	return true;
 }
 
-bool PrestigeInstrument::loadFile(const QString& bundlePath)
+void PrestigeInstrument::loadFile(const QString& bundlePath)
 {
 	QMutexLocker lock(&m_pluginMutex);
 	closePluginLocked();
@@ -247,11 +247,10 @@ bool PrestigeInstrument::loadFile(const QString& bundlePath)
 	{
 		m_lastError = error;
 		m_bundlePath.clear();
-		return false;
+		return;
 	}
 
 	m_lastError.clear();
-	return true;
 }
 
 void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
@@ -389,7 +388,8 @@ void PrestigeView::browsePlugin()
 		return;
 	}
 
-	if (!m_pi->loadFile(selected.first()))
+	m_pi->loadFile(selected.first());
+	if (!m_pi->isPluginLoaded())
 	{
 		QMessageBox::warning(this, tr("VST3 load failed"), m_pi->lastError());
 	}
