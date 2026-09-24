@@ -435,9 +435,9 @@ void PrestigeView::updateLabels()
 extern "C"
 {
 
-PLUGIN_EXPORT Plugin * lmms_plugin_main( Model * m, void * )
+Q_DECL_EXPORT lmms::Plugin* lmms_plugin_main(lmms::Model* m, void*)
 {
-	return new lmms::PrestigeInstrument( static_cast<lmms::InstrumentTrack *>( m ) );
+	return new lmms::PrestigeInstrument(static_cast<lmms::InstrumentTrack*>(m));
 }
 
 }
