@@ -10,7 +10,7 @@ BUILD_PLUGIN(prestige
     EMBEDDED_RESOURCES logo.svg
 )
 
-target_link_libraries(prestige PRIVATE vst3base)
+target_link_libraries(prestige vst3base)
 target_include_directories(prestige PRIVATE
     "${CMAKE_SOURCE_DIR}/plugins/Vst3Base"
     "${CMAKE_SOURCE_DIR}/plugins/Vst3Base/vst3sdk"
