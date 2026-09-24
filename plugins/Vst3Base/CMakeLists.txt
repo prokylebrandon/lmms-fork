@@ -76,6 +76,7 @@ endif()
 # can link against it without duplicating SDK object code.
 BUILD_PLUGIN(vst3base
     Vst3PluginInstance.cpp
+    Vst3PlugFrameIid.cpp
     ${VST3SDK_SOURCES}
     EXPORT_BASE_NAME vst3base
     LINK SHARED
@@ -111,7 +112,3 @@ endif()
 if(LMMS_BUILD_APPLE)
     target_link_libraries(vst3base "-framework CoreFoundation")
 endif()
-
-
-
-
