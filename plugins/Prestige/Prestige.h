@@ -26,14 +26,18 @@
 #define LMMS_PRESTIGE_H
 
 #include <QMutex>
+#include <QPointer>
+#include <functional>
 #include <memory>
 
 #include "Instrument.h"
 #include "InstrumentView.h"
+#include "SubWindow.h"
 #include "Vst3PluginInstance.h"
 
 class QLabel;
 class QPushButton;
+class QWidget;
 
 namespace lmms
 {
@@ -45,23 +49,23 @@ class PrestigeView;
 
 
 /**
- * @brief Stage 1 PRESTIGE instrument.
+ * @brief PRESTIGE instrument.
  *
  * Single Plugin::Type::Instrument descriptor with subPluginFeatures =
  * nullptr (browse-to-load, per the approved Phase 2 design decision).
  * Mirrors plugins/Vestige/Vestige.cpp's overall shape, adapted to build on
  * Vst3PluginInstance (Phase 1) instead of the out-of-process VstPlugin.
  *
- * Stage 1 scope: load a bundle, resolve the first instrument-capable
- * class, play notes through it, save/restore state. No native editor
- * (IPlugView) and no per-parameter automation UI yet — those are later
- * stages of this same phase, added on top of this file without changing
- * its shape.
+ * Scope so far: load a bundle, resolve the first instrument-capable
+ * class, play notes through it, save/restore state, and show the plugin's
+ * native editor (IPlugView).  No per-parameter automation UI yet.
  */
 class PrestigeInstrument : public Instrument
 {
 	Q_OBJECT
 public:
+	using EditorResizeCallback = Vst3PluginInstance::EditorResizeCallback;
+
 	explicit PrestigeInstrument(InstrumentTrack* instrumentTrack);
 	~PrestigeInstrument() override;
 
@@ -79,9 +83,8 @@ public:
 	/**
 	 * Load a .vst3 bundle (single-file or bundle-directory form) selected
 	 * via the browse dialog. Picks the first instrument-capable class
-	 * found; bundles exposing more than one get no selection UI in Stage 1
-	 * (that's flagged, not solved, here — see the prompt's note that a
-	 * multi-instrument bundle needs a real picker eventually).
+	 * found; bundles exposing more than one get no selection UI yet
+	 * (flagged, not solved, here).
 	 *
 	 * Overrides Plugin::loadFile (void return). On failure, lastError()
 	 * holds a displayable message and isPluginLoaded() returns false.
@@ -98,6 +101,23 @@ public:
 	QString lastError() const { return m_lastError; }
 	QString bundlePath() const { return m_bundlePath; }
 
+	// ---- Native editor (GUI thread only) ---------------------------------
+	//
+	// Thin wrappers over Vst3PluginInstance's editor API.  They deliberately
+	// do NOT take m_pluginMutex: attaching a view can take a long time, and
+	// holding the audio mutex for that long would make the audio thread skip
+	// blocks.  Controller/view work is independent of the processor, and the
+	// plugin is only ever destroyed on the GUI thread, so this is safe.
+
+	bool createEditor(int* width, int* height, EditorResizeCallback onResize, QString* error);
+	bool attachEditor(void* nativeParent, QString* error);
+	void closeEditor();
+
+signals:
+	/// Emitted (GUI thread) just before the loaded plugin is destroyed, so any
+	/// open editor window can detach its view and close first.
+	void pluginAboutToClose();
+
 private:
 	/// Caller must already hold m_pluginMutex. Tears down m_plugin if one
 	/// is loaded; does not touch m_bundlePath/m_classCid so callers can
@@ -108,10 +128,10 @@ private:
 	 * (Re)creates m_plugin from m_bundlePath.
 	 *
 	 * @param preferredCid  Class UID to resolve via discoverClasses(), as
-	 *   recorded by a previous save (see doc handoff notes: cid is the
-	 *   stable identity, never a positional index). Empty for a fresh
-	 *   load from the browse dialog, in which case the first
-	 *   instrument-capable class is picked automatically.
+	 *   recorded by a previous save (cid is the stable identity, never a
+	 *   positional index). Empty for a fresh load from the browse dialog, in
+	 *   which case the first instrument-capable class is picked
+	 *   automatically.
 	 * Caller must already hold m_pluginMutex.
 	 */
 	bool instantiatePlugin(const QString& preferredCid, QString& error);
@@ -133,30 +153,40 @@ private:
 namespace gui
 {
 
-/// Stage 1 view: load/browse control, name + vendor display, unload,
-/// error display. No editor toggle and no parameter list yet (later
-/// stages of this phase).
+/// View: load/browse control, name + vendor display, unload, native editor
+/// toggle, error display.  No parameter list yet.
 class PrestigeView : public InstrumentView
 {
 	Q_OBJECT
 public:
 	PrestigeView(Instrument* instrument, QWidget* parent);
-	~PrestigeView() override = default;
+	~PrestigeView() override;
 
 protected slots:
 	void browsePlugin();
 	void unloadPlugin();
+	void toggleEditor();
 
 private:
 	void updateLabels();
+	void openEditorWindow();
 
-	PrestigeInstrument* m_pi;
+	/// Detach the plugin view, then destroy the editor window.  Idempotent.
+	/// Also connected to PrestigeInstrument::pluginAboutToClose.
+	void closeEditorWindow();
+
+	// QPointer: the instrument can be destroyed before its view when a track
+	// is removed, and the editor window is destroyed via deleteLater().
+	QPointer<PrestigeInstrument> m_pi;
+	QPointer<SubWindow> m_editorWindow;
+	QPointer<QWidget>   m_editorHost;
 
 	QLabel* m_nameLabel;
 	QLabel* m_vendorLabel;
 	QLabel* m_errorLabel;
 	QPushButton* m_browseButton;
 	QPushButton* m_unloadButton;
+	QPushButton* m_editorButton;
 };
 
 } // namespace gui

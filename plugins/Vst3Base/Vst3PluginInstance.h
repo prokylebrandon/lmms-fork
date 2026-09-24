@@ -30,7 +30,9 @@
 
 #include <QString>
 #include <QByteArray>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <optional>
@@ -71,14 +73,17 @@ class SampleFrame;
  * Threading contract
  * ------------------
  *  - All public methods except processAudio() must be called from the
- *    **main / GUI thread**.
+ *    **main / GUI thread**.  (queueMidiEvent()/queueParameterChange()/
+ *    clearMidiQueue() are additionally safe to call from any thread: they
+ *    only touch the mutex-protected pending queues.)
  *  - processAudio() is called from the **audio thread** while the plugin is
  *    active.  The audio thread must never race against destruction: call
  *    stopProcessing() from the main thread and wait for it to complete
  *    before destroying this object.
  *  - Parameter state visible to the audio thread is pushed via
- *    queueParameterChange() from the main thread; the audio thread reads it
- *    through the IParameterChanges passed into processAudio().
+ *    queueParameterChange() (LMMS -> plugin) or via the plugin's own
+ *    IComponentHandler::performEdit() (plugin editor -> host); the audio
+ *    thread drains both through the IParameterChanges passed to process().
  *
  * Crash-isolation note
  * --------------------
@@ -91,9 +96,11 @@ class SampleFrame;
  * -----------------------------------------------------
  *  Header:  plugins/Vst3Base/Vst3PluginInstance.h
  *  Factory: Vst3PluginInstance::load(path, classIndex, sampleRate, blockSize)
- *  Audio:   processAudio(inputs, outputs, numFrames, context, eventList, paramChanges)
- *  MIDI:    queueMidiEvent(MidiEvent, sampleOffset) [main thread, pre-process]
- *  Params:  parameters(), queueParameterChange(id, normValue)
+ *  Audio:   processAudio(inputs, outputs, numFrames)
+ *  MIDI:    queueMidiEvent(MidiEvent, sampleOffset)
+ *  Params:  parameters(), queueParameterChange(id, normValue),
+ *           setParameterEditedCallback(cb)
+ *  Editor:  createEditor() / attachEditor() / closeEditor()
  *  State:   saveState() / restoreState(bytes)
  *  Info:    name(), vendor(), category(), isInstrument()
  */
@@ -102,6 +109,17 @@ class SampleFrame;
 class VST3BASE_EXPORT Vst3PluginInstance
 {
 public:
+    /// Called (on the GUI thread) when the plugin asks the host to resize the
+    /// editor window.  The host must resize its native window to exactly
+    /// width x height; onSize() is forwarded to the view afterwards.
+    using EditorResizeCallback = std::function<void(int width, int height)>;
+
+    /// Called (on the GUI thread) when the plugin's own editor changes a
+    /// parameter (IComponentHandler::performEdit).  The controller already
+    /// holds the new value: the callback must NOT write it back into the
+    /// plugin, or the two sides will feed each other.
+    using ParameterEditedCallback = std::function<void(Vst3ParamID id, double normalisedValue)>;
+
     /// Result of load(); holds either a valid instance or an error string.
     struct LoadResult
     {
@@ -113,6 +131,9 @@ public:
     /**
      * Load a VST3 bundle, pick the plugin class at @p classIndex, and
      * initialise it for stereo processing at @p sampleRate / @p blockSize.
+     *
+     * @p classIndex is the index into the factory's FULL class list, i.e. the
+     * value reported in Vst3ClassInfo::classIndex by discoverClasses().
      *
      * All failures are reported via LoadResult::error; this never throws.
      */
@@ -183,26 +204,26 @@ public:
      *                 (L0 R0 L1 R1 …), or nullptr for instrument plugins.
      * @param outputs  Pointer to numFrames interleaved stereo output samples.
      *                 Must be pre-allocated by the caller.
-     * @param numFrames Number of sample frames in this block.
+     * @param numFrames Number of sample frames in this block.  Must not
+     *                 exceed the blockSize passed to load(); a larger block
+     *                 is refused (outputs are zeroed) rather than allowed to
+     *                 overrun the scratch buffers.
      *
      * Only the plugin's first main stereo output bus is read.  Additional
      * output buses are ignored (Phase 1 limitation, documented in
      * doc/prestige-vst3.md).  Input sidechain buses are left silent.
-     *
-     * No heap allocation occurs inside this method.
      */
     void processAudio(const float* inputs,
                       float*       outputs,
                       int          numFrames);
 
     // ------------------------------------------------------------------ //
-    // MIDI / event input  (main thread, call before processAudio)
+    // MIDI / event input  (any thread, delivered on the next processAudio)
     // ------------------------------------------------------------------ //
 
     /**
      * Queue a MIDI event to be delivered in the next processAudio() call.
      * @p sampleOffset is the sample-accurate position within the upcoming block.
-     * Thread: main thread only.
      */
     void queueMidiEvent(const MidiEvent& event, int sampleOffset);
 
@@ -226,18 +247,63 @@ public:
     std::optional<double> getParameterNormalized(Vst3ParamID id) const;
 
     /**
-     * Queue a parameter change (normalised value in [0, 1]) to be delivered
-     * in the next processAudio() call.  Identity is always the VST3
-     * parameter ID, never a positional index.
-     * Thread: main thread only.
+     * LMMS -> plugin: set a parameter (normalised value in [0, 1]).  Updates
+     * the controller and queues the change for the next processAudio() call.
+     * Identity is always the VST3 parameter ID, never a positional index.
      */
     void queueParameterChange(Vst3ParamID id, double normalisedValue);
+
+    /**
+     * Plugin -> LMMS: register a callback fired when the plugin's own
+     * editor changes a parameter.  See ParameterEditedCallback for the
+     * feedback-loop rule.  Pass an empty function to clear.
+     */
+    void setParameterEditedCallback(ParameterEditedCallback cb);
 
     /**
      * Return a formatted display string for a parameter value.
      * E.g. "440.0 Hz" or "0.5 dB".
      */
     QString parameterDisplayString(Vst3ParamID id, double normalisedValue) const;
+
+    // ------------------------------------------------------------------ //
+    // Native editor (IPlugView)  (main thread)
+    // ------------------------------------------------------------------ //
+    //
+    // Two-step so the host can size its native window BEFORE the plugin
+    // attaches to it:
+    //
+    //   1. createEditor()  - asks the controller for a view, checks the
+    //                        platform type is supported, reads its initial
+    //                        size, installs the IPlugFrame.
+    //   2. attachEditor()  - attaches the view to a native parent window
+    //                        (HWND / NSView* / X11 window id).
+    //
+    // closeEditor() is idempotent and safe at any point, including from the
+    // destructor.  The editor never owns the processor or controller:
+    // closing it does not touch plugin state, and a later createEditor()
+    // builds a fresh view against the same controller.
+
+    /**
+     * Create the editor view.  On success @p widthOut / @p heightOut hold the
+     * initial size (validated to a sane range).  On failure @p errorOut holds
+     * a short user-facing message (e.g. the plugin simply has no editor);
+     * technical detail goes to the debug log.
+     */
+    bool createEditor(int*                widthOut,
+                      int*                heightOut,
+                      EditorResizeCallback onResize,
+                      QString*            errorOut = nullptr);
+
+    /** Attach a view created by createEditor() to a native parent window. */
+    bool attachEditor(void* nativeParent, QString* errorOut = nullptr);
+
+    /** Detach and release the editor view (removed(), setFrame(nullptr),
+     *  release), then the frame.  Does nothing if no editor exists. */
+    void closeEditor();
+
+    /** True between a successful createEditor() and closeEditor(). */
+    bool isEditorOpen() const { return m_plugView != nullptr; }
 
     // ------------------------------------------------------------------ //
     // State serialisation
@@ -266,6 +332,10 @@ public:
 private:
     explicit Vst3PluginInstance() = default;
 
+    // The host-callback objects (defined in the .cpp) call back into these.
+    friend class Vst3ComponentHandlerImpl;
+    friend class Vst3PlugFrameImpl;
+
     // Initialisation helpers (called from load())
     bool initFactory(const QString& bundlePath, QString& error);
     bool initComponent(int classIndex, QString& error);
@@ -273,10 +343,15 @@ private:
     bool initAudioSetup(double sampleRate, int blockSize, QString& error);
     bool connectComponentController(QString& error);
     void loadParameters();
+    void installComponentHandler();
 
-    // Internal processing helpers
-    void applyQueuedParameterChanges();
-    void buildEventList();
+    // Host-callback entry points (GUI thread)
+    void onControllerEdit(Vst3ParamID id, double value);
+    void onEditorResizeRequested(int width, int height);
+
+    // Queue a parameter change for the processor WITHOUT touching the
+    // controller (used when the controller is the origin of the change).
+    void queueForProcessor(Vst3ParamID id, double value);
 
     // --- VST3 interface pointers (main-thread owned) ---
     // Using raw void* here to avoid including SDK headers in this public
@@ -288,6 +363,17 @@ private:
     void* m_controller          = nullptr; // IEditController*
     void* m_compConnection      = nullptr; // IConnectionPoint* (component side)
     void* m_ctrlConnection      = nullptr; // IConnectionPoint* (controller side)
+    void* m_componentHandler    = nullptr; // Vst3ComponentHandlerImpl*
+    void* m_plugView            = nullptr; // IPlugView*
+    void* m_plugFrame           = nullptr; // Vst3PlugFrameImpl*
+
+    // --- Editor state (main thread) ---
+    bool                 m_editorAttached = false;
+    bool                 m_inEditorResize = false; // re-entrancy guard for resizeView/onSize
+    EditorResizeCallback m_editorResizeCb;
+
+    // --- Plugin -> host parameter edits (main thread) ---
+    ParameterEditedCallback m_paramEditedCb;
 
     // --- Plugin metadata ---
     QString m_name;
@@ -299,30 +385,38 @@ private:
     double m_sampleRate = 44100.0;
     int    m_blockSize  = 512;
     bool   m_processing = false;
+    bool   m_hasInputBus = false; // false for synths with no audio input bus
 
     // --- Per-block scratch buffers (allocated once in initAudioSetup) ---
     // These avoid heap allocation inside processAudio().
-    std::vector<float>  m_inputBuf;   // interleaved stereo input
-    std::vector<float>  m_outputBuf;  // interleaved stereo output
+    std::vector<float>  m_inputBuf;   // planar stereo input  (L plane, R plane)
+    std::vector<float>  m_outputBuf;  // planar stereo output (L plane, R plane)
     std::vector<float*> m_inputPtrs;  // pointers for VST3 channel pointers
     std::vector<float*> m_outputPtrs; // pointers for VST3 channel pointers
 
     // --- Parameters ---
     std::vector<Vst3Parameter> m_parameters;
 
-    // --- Pending queues (main thread → audio thread, lock-free by design) ---
-    // Simple vector; safe because queueMidiEvent/queueParameterChange and
-    // processAudio are on the same thread pair and processAudio is never
-    // concurrent with queue writes (startProcessing/stopProcessing provide
-    // the synchronisation barrier).
+    // --- Pending queues (any thread -> audio thread) ---
+    // Producers (MIDI thread, GUI thread, plugin editor callbacks) push under
+    // m_queueMutex.  The audio thread swaps the pending vectors into the
+    // "active" ones under the same mutex and then works on them lock-free, so
+    // the lock is held only for two pointer swaps.  All four vectors are
+    // reserved up front; swap() never allocates.
+    //
+    // KNOWN LIMITATION: this is still a (very short) mutex on the audio
+    // thread.  Phase 3's performance pass should replace it with a lock-free
+    // ring buffer.
     struct PendingParamChange { Vst3ParamID id; double value; };
     struct PendingMidiEvent   { MidiEvent event; int sampleOffset; };
 
+    std::mutex                      m_queueMutex;
     std::vector<PendingParamChange> m_pendingParamChanges;
     std::vector<PendingMidiEvent>   m_pendingMidiEvents;
+    std::vector<PendingParamChange> m_activeParamChanges; // audio-thread only
+    std::vector<PendingMidiEvent>   m_activeMidiEvents;   // audio-thread only
 };
 
 } // namespace lmms
 
 #endif // LMMS_VST3_PLUGIN_INSTANCE_H
-

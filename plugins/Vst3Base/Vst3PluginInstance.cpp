@@ -31,6 +31,7 @@
 // VST3 SDK headers
 #include <public.sdk/source/vst/hosting/module.h>
 #include <pluginterfaces/base/ipluginbase.h>
+#include <pluginterfaces/gui/iplugview.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivstmessage.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
@@ -42,6 +43,8 @@
 #include <pluginterfaces/base/funknownimpl.h>
 
 #include <QDebug>
+#include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <algorithm>
 
@@ -90,7 +93,150 @@ void safeRelease(void*& ptr)
     }
 }
 
+/// The IPlugView platform-type constant for the platform we were built for.
+/// Chosen at compile time; never hardcode one platform.
+Steinberg::FIDString platformType()
+{
+#if defined(_WIN32)
+    return Steinberg::kPlatformTypeHWND;
+#elif defined(__APPLE__)
+    return Steinberg::kPlatformTypeNSView;
+#else
+    return Steinberg::kPlatformTypeX11EmbedWindowID;
+#endif
+}
+
+/// Sanity bounds for editor sizes reported by a plugin.  A plugin that
+/// returns garbage must not be able to make the host create a 2-billion-pixel
+/// window.
+constexpr int kMaxEditorDimension = 16384;
+constexpr int kDefaultEditorWidth  = 640;
+constexpr int kDefaultEditorHeight = 480;
+
+bool editorSizeIsSane(int w, int h)
+{
+    return w > 0 && h > 0 && w <= kMaxEditorDimension && h <= kMaxEditorDimension;
+}
+
 } // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// Host callback objects
+//
+// Both are tiny COM objects the plugin holds references to.  They keep only
+// a back-pointer to the owning instance, and that pointer is cleared
+// (detach()) before the instance dies, so a plugin that leaks a reference can
+// never call into a destroyed host.
+// ---------------------------------------------------------------------------
+
+/// IComponentHandler: the channel through which the plugin's controller (and
+/// therefore its native editor) tells the host that a parameter changed.
+class Vst3ComponentHandlerImpl final : public Steinberg::Vst::IComponentHandler
+{
+public:
+    explicit Vst3ComponentHandlerImpl(Vst3PluginInstance* owner) : m_owner(owner) {}
+
+    void detach() { m_owner.store(nullptr); }
+
+    // Gesture bracketing.  Not needed until parameter-automation *recording*
+    // is implemented (Phase 3); accepted and ignored for now.
+    Steinberg::tresult PLUGIN_API beginEdit(Steinberg::Vst::ParamID) override
+    {
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API performEdit(Steinberg::Vst::ParamID id,
+                                              Steinberg::Vst::ParamValue value) override
+    {
+        if (auto* owner = m_owner.load())
+        {
+            owner->onControllerEdit(static_cast<Vst3ParamID>(id), value);
+        }
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API endEdit(Steinberg::Vst::ParamID) override
+    {
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API restartComponent(Steinberg::int32 flags) override
+    {
+        // TODO(Phase 3): handle kParamValuesChanged / kReloadComponent / kIoChanged.
+        qDebug("Vst3PluginInstance: restartComponent(flags=0x%x) requested but not handled yet",
+               static_cast<unsigned>(flags));
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+    {
+        QUERY_INTERFACE(iid, obj, Steinberg::FUnknown::iid, Steinberg::Vst::IComponentHandler)
+        QUERY_INTERFACE(iid, obj, Steinberg::Vst::IComponentHandler::iid, Steinberg::Vst::IComponentHandler)
+        *obj = nullptr;
+        return Steinberg::kNoInterface;
+    }
+
+    Steinberg::uint32 PLUGIN_API addRef() override { return ++m_refs; }
+
+    Steinberg::uint32 PLUGIN_API release() override
+    {
+        const auto remaining = --m_refs;
+        if (remaining == 0)
+        {
+            delete this;
+        }
+        return remaining;
+    }
+
+private:
+    std::atomic<Vst3PluginInstance*> m_owner;
+    std::atomic<Steinberg::uint32>   m_refs{1};
+};
+
+/// IPlugFrame: lets the plugin's view ask the host to resize its window.
+class Vst3PlugFrameImpl final : public Steinberg::IPlugFrame
+{
+public:
+    explicit Vst3PlugFrameImpl(Vst3PluginInstance* owner) : m_owner(owner) {}
+
+    void detach() { m_owner.store(nullptr); }
+
+    Steinberg::tresult PLUGIN_API resizeView(Steinberg::IPlugView* /*view*/,
+                                             Steinberg::ViewRect*  newSize) override
+    {
+        auto* owner = m_owner.load();
+        if (!owner || !newSize)
+        {
+            return Steinberg::kInvalidArgument;
+        }
+        owner->onEditorResizeRequested(newSize->getWidth(), newSize->getHeight());
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+    {
+        QUERY_INTERFACE(iid, obj, Steinberg::FUnknown::iid, Steinberg::IPlugFrame)
+        QUERY_INTERFACE(iid, obj, Steinberg::IPlugFrame::iid, Steinberg::IPlugFrame)
+        *obj = nullptr;
+        return Steinberg::kNoInterface;
+    }
+
+    Steinberg::uint32 PLUGIN_API addRef() override { return ++m_refs; }
+
+    Steinberg::uint32 PLUGIN_API release() override
+    {
+        const auto remaining = --m_refs;
+        if (remaining == 0)
+        {
+            delete this;
+        }
+        return remaining;
+    }
+
+private:
+    std::atomic<Vst3PluginInstance*> m_owner;
+    std::atomic<Steinberg::uint32>   m_refs{1};
+};
 
 // ---------------------------------------------------------------------------
 // Vst3PluginInstance::discoverClasses
@@ -230,9 +376,11 @@ bool Vst3PluginInstance::initComponent(int classIndex, QString& error)
     factory->getFactoryInfo(&factInfo);
     m_vendor = QString::fromLatin1(factInfo.vendor);
 
-    // Locate the class at classIndex (audio effect classes only)
-    int audioIdx = 0;
-    bool found   = false;
+    // classIndex is the index into the factory's FULL class list, matching
+    // Vst3ClassInfo::classIndex from discoverClasses().  (It used to be
+    // counted among audio classes only, which disagreed with discoverClasses()
+    // for any bundle that lists a non-audio class before the audio class.)
+    bool found = false;
 
     const int nClasses = factory->countClasses();
     for (int i = 0; i < nClasses; ++i)
@@ -244,7 +392,7 @@ bool Vst3PluginInstance::initComponent(int classIndex, QString& error)
         if (std::string(ci.category) != kVstAudioEffectClass)
             continue;
 
-        if (audioIdx == classIndex)
+        if (i == classIndex)
         {
             m_name        = QString::fromLatin1(ci.name);
             m_isInstrument = false; // refined below with PClassInfo2
@@ -283,7 +431,6 @@ bool Vst3PluginInstance::initComponent(int classIndex, QString& error)
             found = true;
             break;
         }
-        ++audioIdx;
     }
 
     if (!found)
@@ -318,6 +465,8 @@ bool Vst3PluginInstance::initController(QString& error)
         // initialize() was already called above; call setComponentState()
         // with an empty stream so the controller knows the component is ready.
         m_controller = ctrl;
+        installComponentHandler();
+
         Vst3MemoryStream emptyStream;
         comp->getState(&emptyStream);
         emptyStream.seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
@@ -355,6 +504,11 @@ bool Vst3PluginInstance::initController(QString& error)
         return false;
     }
 
+    // Take ownership, then hand the controller its IComponentHandler before
+    // any state is pushed into it.
+    m_controller = ctrl;
+    installComponentHandler();
+
     // Sync component state into controller
     Vst3MemoryStream stateStream;
     if (comp->getState(&stateStream) == Steinberg::kResultOk)
@@ -363,12 +517,24 @@ bool Vst3PluginInstance::initController(QString& error)
         ctrl->setComponentState(&stateStream);
     }
 
-    m_controller = ctrl;
     return true;
+}
+
+void Vst3PluginInstance::installComponentHandler()
+{
+    if (!m_controller || m_componentHandler)
+        return;
+
+    // Refcount starts at 1: that reference is owned by this instance and
+    // released in the destructor.  The controller takes its own reference.
+    auto* handler = new Vst3ComponentHandlerImpl(this);
+    m_componentHandler = handler;
+    cast<Steinberg::Vst::IEditController>(m_controller)->setComponentHandler(handler);
 }
 
 bool Vst3PluginInstance::connectComponentController(QString& error)
 {
+    Q_UNUSED(error)
     if (!m_controller) return true; // no controller — skip
 
     auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
@@ -435,6 +601,10 @@ bool Vst3PluginInstance::initAudioSetup(double sampleRate, int blockSize, QStrin
     const int numOutputBuses = comp->getBusCount(Steinberg::Vst::kAudio,
                                                    Steinberg::Vst::kOutput);
 
+    // A synth with no audio input bus must be given numInputs == 0 in
+    // ProcessData, not a phantom stereo input.
+    m_hasInputBus = numInputBuses > 0;
+
     for (int i = 0; i < numInputBuses; ++i)
         comp->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, i,
                           i == 0 /*main bus only*/);
@@ -461,6 +631,14 @@ bool Vst3PluginInstance::initAudioSetup(double sampleRate, int blockSize, QStrin
     // We'll split our interleaved LMMS buffer into L/R planes on each call.
     m_inputPtrs.resize(2);
     m_outputPtrs.resize(2);
+
+    // Reserve the event/parameter queues up front so that pushing from the
+    // GUI/MIDI threads and swapping on the audio thread never allocate in
+    // the common case.
+    m_pendingParamChanges.reserve(1024);
+    m_pendingMidiEvents.reserve(1024);
+    m_activeParamChanges.reserve(1024);
+    m_activeMidiEvents.reserve(1024);
 
     return true;
 }
@@ -506,6 +684,10 @@ void Vst3PluginInstance::loadParameters()
 
 Vst3PluginInstance::~Vst3PluginInstance()
 {
+    // The editor view holds references into the controller, so it has to be
+    // torn down before anything else.
+    closeEditor();
+
     // Ensure processing is stopped before tearing down
     if (m_processing)
         stopProcessing();
@@ -529,6 +711,10 @@ Vst3PluginInstance::~Vst3PluginInstance()
         Steinberg::Vst::IEditController* ctrl =
             cast<Steinberg::Vst::IEditController>(m_controller);
 
+        // Stop the controller calling back into a host object that is about
+        // to be destroyed.
+        ctrl->setComponentHandler(nullptr);
+
         Steinberg::FUnknown* compUnk = nullptr;
         Steinberg::FUnknown* ctrlUnk = nullptr;
         if (comp) comp->queryInterface(Steinberg::FUnknown::iid,
@@ -542,6 +728,16 @@ Vst3PluginInstance::~Vst3PluginInstance()
         if (!sameObj)
             ctrl->terminate();
         safeRelease<Steinberg::Vst::IEditController>(m_controller);
+    }
+
+    // Our own reference to the component handler.  detach() first so that a
+    // plugin which kept a stray reference can no longer reach this object.
+    if (m_componentHandler)
+    {
+        auto* handler = static_cast<Vst3ComponentHandlerImpl*>(m_componentHandler);
+        handler->detach();
+        handler->release();
+        m_componentHandler = nullptr;
     }
 
     // Audio processor — release before component
@@ -599,28 +795,47 @@ void Vst3PluginInstance::stopProcessing()
 }
 
 // ---------------------------------------------------------------------------
-// processAudio  (audio thread — no heap allocation)
+// processAudio  (audio thread)
 // ---------------------------------------------------------------------------
 
 void Vst3PluginInstance::processAudio(const float* inputs,
                                        float*       outputs,
                                        int          numFrames)
 {
-    if (!m_processing || !m_audioProcessor) return;
+    if (!m_processing || !m_audioProcessor || !outputs || numFrames <= 0) return;
+
+    // The planar scratch buffers were sized for m_blockSize in
+    // initAudioSetup().  A larger block would write past their end, so
+    // refuse it and emit silence.  (Mid-session buffer-size changes are a
+    // Phase 3 item; until then this turns a heap overrun into a dropout.)
+    if (numFrames > m_blockSize)
+    {
+        std::fill(outputs, outputs + static_cast<std::size_t>(numFrames) * 2, 0.0f);
+        return;
+    }
 
     auto* proc = cast<Steinberg::Vst::IAudioProcessor>(m_audioProcessor);
 
+    // ---- Take everything queued since the last block ----
+    // The lock covers two vector swaps only.  Producers (MIDI thread, GUI
+    // thread, the plugin editor's performEdit) push under the same mutex.
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_activeParamChanges.swap(m_pendingParamChanges);
+        m_activeMidiEvents.swap(m_pendingMidiEvents);
+    }
+
     // ---- Build per-block parameter changes ----
     Vst3ParameterChanges paramChanges;
-    for (const auto& pc : m_pendingParamChanges)
+    for (const auto& pc : m_activeParamChanges)
         paramChanges.addChange(pc.id, pc.value);
-    m_pendingParamChanges.clear();
+    m_activeParamChanges.clear();
 
     // ---- Build per-block event list ----
     Vst3EventList eventList;
-    for (const auto& pe : m_pendingMidiEvents)
+    for (const auto& pe : m_activeMidiEvents)
         eventList.addMidiEvent(pe.event, pe.sampleOffset);
-    m_pendingMidiEvents.clear();
+    m_activeMidiEvents.clear();
 
     // ---- De-interleave input (L R L R …) → planar (L… R…) ----
     const std::size_t nf = static_cast<std::size_t>(numFrames);
@@ -666,9 +881,9 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     pd.processMode         = Steinberg::Vst::kRealtime;
     pd.symbolicSampleSize  = Steinberg::Vst::kSample32;
     pd.numSamples          = numFrames;
-    pd.numInputs           = 1;
+    pd.numInputs           = m_hasInputBus ? 1 : 0;
     pd.numOutputs          = 1;
-    pd.inputs              = &inputBusBuffers;
+    pd.inputs              = m_hasInputBus ? &inputBusBuffers : nullptr;
     pd.outputs             = &outputBusBuffers;
     pd.inputParameterChanges  = &paramChanges;
     pd.outputParameterChanges = nullptr; // we don't consume output param changes
@@ -692,11 +907,13 @@ void Vst3PluginInstance::processAudio(const float* inputs,
 
 void Vst3PluginInstance::queueMidiEvent(const MidiEvent& event, int sampleOffset)
 {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
     m_pendingMidiEvents.push_back({ event, sampleOffset });
 }
 
 void Vst3PluginInstance::clearMidiQueue()
 {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
     m_pendingMidiEvents.clear();
 }
 
@@ -720,6 +937,12 @@ std::optional<double> Vst3PluginInstance::getParameterNormalized(Vst3ParamID id)
     return v;
 }
 
+void Vst3PluginInstance::queueForProcessor(Vst3ParamID id, double value)
+{
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    m_pendingParamChanges.push_back({ id, value });
+}
+
 void Vst3PluginInstance::queueParameterChange(Vst3ParamID id, double normalisedValue)
 {
     // Also inform the controller so its internal state stays in sync
@@ -729,7 +952,25 @@ void Vst3PluginInstance::queueParameterChange(Vst3ParamID id, double normalisedV
         ctrl->setParamNormalized(static_cast<Steinberg::Vst::ParamID>(id),
                                   normalisedValue);
     }
-    m_pendingParamChanges.push_back({ id, normalisedValue });
+    queueForProcessor(id, normalisedValue);
+}
+
+void Vst3PluginInstance::setParameterEditedCallback(ParameterEditedCallback cb)
+{
+    m_paramEditedCb = std::move(cb);
+}
+
+void Vst3PluginInstance::onControllerEdit(Vst3ParamID id, double value)
+{
+    // The plugin's controller is the origin of this change, so it already
+    // holds the new value.  Deliberately do NOT call setParamNormalized()
+    // here: that would re-enter the controller from inside its own
+    // performEdit() and is the first half of a feedback loop.  Just make
+    // sure the processor hears about it.
+    queueForProcessor(id, value);
+
+    if (m_paramEditedCb)
+        m_paramEditedCb(id, value);
 }
 
 QString Vst3PluginInstance::parameterDisplayString(Vst3ParamID id,
@@ -743,6 +984,154 @@ QString Vst3PluginInstance::parameterDisplayString(Vst3ParamID id,
                                      normalisedValue, display) == Steinberg::kResultOk)
         return QString::fromUtf16(reinterpret_cast<const char16_t*>(display));
     return {};
+}
+
+// ---------------------------------------------------------------------------
+// Native editor (IPlugView)
+// ---------------------------------------------------------------------------
+
+bool Vst3PluginInstance::createEditor(int*                widthOut,
+                                      int*                heightOut,
+                                      EditorResizeCallback onResize,
+                                      QString*            errorOut)
+{
+    const auto fail = [errorOut](const char* userMessage) -> bool
+    {
+        if (errorOut)
+            *errorOut = QString::fromLatin1(userMessage);
+        return false;
+    };
+
+    // At most one live view per instance.
+    closeEditor();
+
+    if (!m_controller)
+    {
+        qWarning("Vst3PluginInstance: '%s' has no controller, so no editor", qPrintable(m_name));
+        return fail("Plugin editor is unavailable");
+    }
+
+    auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
+
+    // createView() returns a view we own (refcount 1), or nullptr when the
+    // plugin has no editor.
+    Steinberg::IPlugView* view = ctrl->createView(Steinberg::Vst::ViewType::kEditor);
+    if (!view)
+    {
+        qDebug("Vst3PluginInstance: '%s' returned no editor view", qPrintable(m_name));
+        return fail("Plugin editor is unavailable");
+    }
+
+    if (view->isPlatformTypeSupported(platformType()) != Steinberg::kResultTrue)
+    {
+        qWarning("Vst3PluginInstance: '%s' editor does not support platform type '%s'",
+                 qPrintable(m_name), platformType());
+        view->release();
+        return fail("Plugin editor is unavailable");
+    }
+
+    // Validate the size instead of trusting it.
+    Steinberg::ViewRect rect{};
+    int width  = kDefaultEditorWidth;
+    int height = kDefaultEditorHeight;
+    if (view->getSize(&rect) == Steinberg::kResultOk
+        && editorSizeIsSane(rect.getWidth(), rect.getHeight()))
+    {
+        width  = rect.getWidth();
+        height = rect.getHeight();
+    }
+    else
+    {
+        qWarning("Vst3PluginInstance: '%s' reported an unusable editor size; using %dx%d",
+                 qPrintable(m_name), width, height);
+    }
+
+    // The frame must be installed before attached() so the plugin can request
+    // resizes during attach.
+    auto* frame = new Vst3PlugFrameImpl(this); // refcount 1: owned by us
+    view->setFrame(frame);
+
+    m_plugView         = view;
+    m_plugFrame        = frame;
+    m_editorAttached   = false;
+    m_editorResizeCb   = std::move(onResize);
+
+    if (widthOut)  *widthOut  = width;
+    if (heightOut) *heightOut = height;
+    return true;
+}
+
+bool Vst3PluginInstance::attachEditor(void* nativeParent, QString* errorOut)
+{
+    if (!m_plugView || m_editorAttached || !nativeParent)
+    {
+        if (errorOut)
+            *errorOut = QStringLiteral("Plugin editor is unavailable");
+        return false;
+    }
+
+    auto* view = cast<Steinberg::IPlugView>(m_plugView);
+    const Steinberg::tresult r = view->attached(nativeParent, platformType());
+    if (r != Steinberg::kResultOk)
+    {
+        qWarning("Vst3PluginInstance: '%s' editor attached() failed (tresult=%d)",
+                 qPrintable(m_name), static_cast<int>(r));
+        if (errorOut)
+            *errorOut = QStringLiteral("Plugin editor is unavailable");
+        return false;
+    }
+
+    m_editorAttached = true;
+    return true;
+}
+
+void Vst3PluginInstance::closeEditor()
+{
+    if (!m_plugView)
+        return;
+
+    // Stop resize callbacks first: nothing from here on may reach the GUI.
+    m_editorResizeCb = nullptr;
+
+    auto* view = cast<Steinberg::IPlugView>(m_plugView);
+    m_plugView = nullptr;
+
+    // Order matters: detach from the native parent, drop the frame, release.
+    if (m_editorAttached)
+    {
+        view->removed();
+        m_editorAttached = false;
+    }
+    view->setFrame(nullptr);
+    view->release();
+
+    if (m_plugFrame)
+    {
+        auto* frame = static_cast<Vst3PlugFrameImpl*>(m_plugFrame);
+        frame->detach();
+        frame->release();
+        m_plugFrame = nullptr;
+    }
+}
+
+void Vst3PluginInstance::onEditorResizeRequested(int width, int height)
+{
+    // Guard against a plugin that asks for a nonsense size, and against
+    // re-entrancy: onSize() can itself provoke another resizeView().
+    if (m_inEditorResize || !m_plugView || !editorSizeIsSane(width, height))
+        return;
+
+    m_inEditorResize = true;
+
+    // Per the IPlugView contract: the host resizes its window first, then, in
+    // the same call stack, tells the view its new size.
+    if (m_editorResizeCb)
+        m_editorResizeCb(width, height);
+
+    Steinberg::ViewRect rect(0, 0, width, height);
+    cast<Steinberg::IPlugView>(m_plugView)->onSize(&rect);
+
+    m_inEditorResize = false;
 }
 
 // ---------------------------------------------------------------------------

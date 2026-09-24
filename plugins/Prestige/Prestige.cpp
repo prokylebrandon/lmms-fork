@@ -25,21 +25,34 @@
 #include "Prestige.h"
 
 #include <QDomElement>
+#include <QEvent>
 #include <QFileDialog>
 #include <QGridLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QMutexLocker>
+#include <QObject>
 #include <QPushButton>
 
 #include "AudioEngine.h"
 #include "embed.h"
 #include "Engine.h"
+#include "GuiApplication.h"
 #include "InstrumentPlayHandle.h"
 #include "InstrumentTrack.h"
+#include "MainWindow.h"
+#include "SampleFrame.h"
+#include "Song.h"
 
 namespace lmms
 {
+
+// play() hands LMMS's SampleFrame buffer to Vst3PluginInstance::processAudio()
+// as a plain interleaved float* (L R L R ...).  That is only valid if a
+// SampleFrame is exactly one left + one right float with no padding.  This
+// turns that assumption into a compile error instead of silent garbage audio.
+static_assert(sizeof(SampleFrame) == 2 * sizeof(float),
+	"PRESTIGE assumes SampleFrame is a tightly packed interleaved float pair");
 
 extern "C"
 {
@@ -93,23 +106,26 @@ PrestigeInstrument::~PrestigeInstrument()
 
 void PrestigeInstrument::play(SampleFrame* workingBuffer)
 {
-	QMutexLocker lock(&m_pluginMutex);
-	if (!m_plugin)
+	// Never block the audio thread: if the GUI thread is in the middle of a
+	// load/unload (which holds this mutex for as long as a DLL takes to load),
+	// skip this period instead of stalling audio.  Offline export must not
+	// drop blocks, so it waits.  Same policy as Vestige::play().
+	if (!m_pluginMutex.tryLock(Engine::getSong()->isExporting() ? -1 : 0))
 	{
 		return;
 	}
 
-	const auto frames = Engine::audioEngine()->framesPerPeriod();
+	if (m_plugin)
+	{
+		const auto frames = Engine::audioEngine()->framesPerPeriod();
 
-	// SampleFrame is assumed to be laid out as interleaved stereo sample_t
-	// pairs, matching Vst3PluginInstance::processAudio()'s expected buffer
-	// format exactly, so no conversion is needed beyond reinterpreting the
-	// pointer. NOT independently verified: SampleFrame.h wasn't read this
-	// session, so this assumes sample_t == float. If it's a fixed-point or
-	// double type instead, this cast is wrong and needs a real conversion
-	// loop, not a reinterpret_cast.
-	auto* out = reinterpret_cast<float*>(workingBuffer);
-	m_plugin->processAudio(nullptr, out, frames);
+		// Layout is guaranteed by the static_assert at the top of this file
+		// (sample_t is float; SampleFrame is a tightly packed L/R pair).
+		auto* out = reinterpret_cast<float*>(workingBuffer);
+		m_plugin->processAudio(nullptr, out, frames);
+	}
+
+	m_pluginMutex.unlock();
 }
 
 bool PrestigeInstrument::handleMidiEvent(const MidiEvent& event, const TimePos& time, f_cnt_t offset)
@@ -131,6 +147,12 @@ void PrestigeInstrument::closePluginLocked()
 {
 	if (m_plugin)
 	{
+		// An open editor window holds a native child of the view we are about
+		// to destroy.  Let the GUI close it (detaching the plugin's IPlugView
+		// first) before the plugin goes away.  Runs on the GUI thread: plugin
+		// load/unload/project-load are all GUI-thread operations.
+		emit pluginAboutToClose();
+
 		// Known rough edge (flagged for Phase 3, per the prompt's request
 		// to report rather than paper over these): this does not send an
 		// explicit all-notes-off/flush before tearing down. Stage 1 uses
@@ -253,6 +275,34 @@ void PrestigeInstrument::loadFile(const QString& bundlePath)
 	m_lastError.clear();
 }
 
+bool PrestigeInstrument::createEditor(int* width, int* height, EditorResizeCallback onResize, QString* error)
+{
+	if (!m_plugin)
+	{
+		if (error) { *error = tr("No plugin loaded"); }
+		return false;
+	}
+	return m_plugin->createEditor(width, height, std::move(onResize), error);
+}
+
+bool PrestigeInstrument::attachEditor(void* nativeParent, QString* error)
+{
+	if (!m_plugin)
+	{
+		if (error) { *error = tr("No plugin loaded"); }
+		return false;
+	}
+	return m_plugin->attachEditor(nativeParent, error);
+}
+
+void PrestigeInstrument::closeEditor()
+{
+	if (m_plugin)
+	{
+		m_plugin->closeEditor();
+	}
+}
+
 void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 {
 	QMutexLocker lock(&m_pluginMutex);
@@ -325,6 +375,52 @@ gui::PluginView* PrestigeInstrument::instantiateView(QWidget* parent)
 namespace gui
 {
 
+namespace
+{
+
+/// Watches the editor's SubWindow for its Close event so the plugin view can
+/// be detached BEFORE the native window underneath it is destroyed.  Never
+/// consumes the event: normal close handling still runs afterwards.
+class EditorCloseFilter : public QObject
+{
+public:
+	EditorCloseFilter(QObject* parent, std::function<void()> onClose) :
+		QObject(parent),
+		m_onClose(std::move(onClose))
+	{
+	}
+
+protected:
+	bool eventFilter(QObject* watched, QEvent* event) override
+	{
+		if (event->type() == QEvent::Close && m_onClose)
+		{
+			m_onClose();
+		}
+		return QObject::eventFilter(watched, event);
+	}
+
+private:
+	std::function<void()> m_onClose;
+};
+
+/// IPlugView sizes are physical pixels on Windows/Linux but logical units on
+/// macOS (see the comment above IPlugView in the SDK's iplugview.h), while Qt
+/// widget sizes are always logical.  Without this, on a 125%/150% scaled
+/// Windows display the plugin would draw into only part of an oversized frame.
+QSize toWidgetSize(const QWidget* reference, int viewWidth, int viewHeight)
+{
+#ifdef __APPLE__
+	Q_UNUSED(reference)
+	return QSize(viewWidth, viewHeight);
+#else
+	const qreal ratio = reference->devicePixelRatioF();
+	return QSize(qRound(viewWidth / ratio), qRound(viewHeight / ratio));
+#endif
+}
+
+} // namespace
+
 PrestigeView::PrestigeView(Instrument* instrument, QWidget* parent) :
 	InstrumentView(instrument, parent),
 	m_pi(dynamic_cast<PrestigeInstrument*>(instrument))
@@ -343,14 +439,31 @@ PrestigeView::PrestigeView(Instrument* instrument, QWidget* parent) :
 	m_unloadButton = new QPushButton(tr("Unload"), this);
 	connect(m_unloadButton, &QPushButton::clicked, this, &PrestigeView::unloadPlugin);
 
+	m_editorButton = new QPushButton(tr("Show editor"), this);
+	connect(m_editorButton, &QPushButton::clicked, this, &PrestigeView::toggleEditor);
+
 	layout->addWidget(m_nameLabel, 0, 0, 1, 2);
 	layout->addWidget(m_vendorLabel, 1, 0, 1, 2);
 	layout->addWidget(m_browseButton, 2, 0);
 	layout->addWidget(m_unloadButton, 2, 1);
-	layout->addWidget(m_errorLabel, 3, 0, 1, 2);
-	layout->setRowStretch(4, 1);
+	layout->addWidget(m_editorButton, 3, 0, 1, 2);
+	layout->addWidget(m_errorLabel, 4, 0, 1, 2);
+	layout->setRowStretch(5, 1);
+
+	// The editor window must close before the plugin it shows is destroyed
+	// (unload, replace, or project reload).
+	if (m_pi)
+	{
+		connect(m_pi.data(), &PrestigeInstrument::pluginAboutToClose,
+			this, &PrestigeView::closeEditorWindow);
+	}
 
 	updateLabels();
+}
+
+PrestigeView::~PrestigeView()
+{
+	closeEditorWindow();
 }
 
 void PrestigeView::browsePlugin()
@@ -407,6 +520,117 @@ void PrestigeView::unloadPlugin()
 	updateLabels();
 }
 
+void PrestigeView::toggleEditor()
+{
+	if (m_editorWindow)
+	{
+		closeEditorWindow();
+	}
+	else
+	{
+		openEditorWindow();
+	}
+}
+
+void PrestigeView::openEditorWindow()
+{
+	if (!m_pi || !m_pi->isPluginLoaded())
+	{
+		return;
+	}
+
+	// Already open: just bring it to the front.
+	if (m_editorWindow)
+	{
+		m_editorWindow->show();
+		m_editorWindow->raise();
+		return;
+	}
+
+	// Step 1: ask the plugin for a view and its initial size.  A plugin with
+	// no editor lands here, and that is a normal, non-error situation.
+	int width = 0;
+	int height = 0;
+	QString error;
+	const bool created = m_pi->createEditor(&width, &height,
+		[this](int w, int h)
+		{
+			// Plugin asked to resize its editor (IPlugFrame::resizeView).
+			if (m_editorHost) { m_editorHost->setFixedSize(toWidgetSize(m_editorHost, w, h)); }
+			if (m_editorWindow) { m_editorWindow->adjustSize(); }
+		},
+		&error);
+
+	if (!created)
+	{
+		QMessageBox::information(this, tr("PRESTIGE"),
+			error.isEmpty() ? tr("Plugin editor is unavailable") : error);
+		return;
+	}
+
+	// Step 2: a native host widget sized to the plugin's view.  The plugin
+	// attaches its own child window to this widget's native handle, so the
+	// widget must be a real native window (WA_NativeWindow).
+	auto* host = new QWidget;
+	host->setAttribute(Qt::WA_NativeWindow);
+	host->setFixedSize(toWidgetSize(host, width, height));
+
+	// Same wrapper Vestige uses for its native editor windows.  Closing must
+	// not delete the widget out from under the plugin, so DeleteOnClose is off
+	// and we destroy the window ourselves, after the view is detached.
+	SubWindow* window = getGUI()->mainWindow()->addWindowedWidget(host);
+	window->setAttribute(Qt::WA_DeleteOnClose, false);
+	window->setWindowTitle(m_pi->pluginName());
+
+	m_editorHost = host;
+	m_editorWindow = window;
+
+	// Step 3: attach.  winId() forces creation of the native window; the
+	// handle is an HWND on Windows, an NSView* on macOS, an X11 window id on
+	// Linux, which is exactly what each IPlugView platform type expects.
+	if (!m_pi->attachEditor(reinterpret_cast<void*>(host->winId()), &error))
+	{
+		closeEditorWindow();
+		QMessageBox::warning(this, tr("VST3 editor"),
+			error.isEmpty() ? tr("Plugin editor is unavailable") : error);
+		return;
+	}
+
+	// If the user closes the window with its own close button, detach the
+	// plugin view first.
+	window->installEventFilter(new EditorCloseFilter(window, [this]() { closeEditorWindow(); }));
+
+	window->show();
+	m_editorButton->setText(tr("Hide editor"));
+}
+
+void PrestigeView::closeEditorWindow()
+{
+	// Plugin view FIRST: it has to detach from (and destroy its child of) the
+	// native parent window before that window is destroyed.  Closing the
+	// editor never touches the processor or plugin state; reopening builds a
+	// fresh view against the same controller.
+	if (m_pi)
+	{
+		m_pi->closeEditor();
+	}
+
+	if (m_editorWindow)
+	{
+		// deleteLater(): this may be running inside the window's own close
+		// event, so it must not be deleted synchronously.
+		m_editorWindow->hide();
+		m_editorWindow->deleteLater();
+		m_editorWindow.clear();
+	}
+	m_editorHost.clear();
+
+	if (m_editorButton)
+	{
+		m_editorButton->setText(tr("Show editor"));
+	}
+}
+
 void PrestigeView::updateLabels()
 {
 	if (!m_pi)
@@ -414,7 +638,10 @@ void PrestigeView::updateLabels()
 		return;
 	}
 
-	if (m_pi->isPluginLoaded())
+	const bool loaded = m_pi->isPluginLoaded();
+	m_editorButton->setEnabled(loaded);
+
+	if (loaded)
 	{
 		m_nameLabel->setText(m_pi->pluginName());
 		m_vendorLabel->setText(m_pi->pluginVendor());
