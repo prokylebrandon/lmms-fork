@@ -37,7 +37,6 @@
 #include "Engine.h"
 #include "InstrumentPlayHandle.h"
 #include "InstrumentTrack.h"
-#include "prestige_export.h"
 
 namespace lmms
 {
