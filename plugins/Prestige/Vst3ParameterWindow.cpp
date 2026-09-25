@@ -587,6 +587,14 @@ void Vst3ParameterWindow::setParameters(const std::vector<Vst3ParameterModel*>& 
 	}
 	m_tableModel->setParameters(std::move(rows));
 
+	// The proxy has setDynamicSortFilter(false), which stops it from
+	// automatically re-running filterAcceptsRow() when the source model
+	// emits modelReset. The proxy clears its row-map on reset (so rowCount()
+	// drops to 0) but never rebuilds it, leaving the view empty even though
+	// the source now has rows. Force a rebuild here, immediately after the
+	// source model is populated with the new plugin's parameters.
+	m_proxy->invalidateFilter();
+
 	m_messageLabel->setText(emptyMessage);
 	m_messageLabel->setVisible(models.empty() && !emptyMessage.isEmpty());
 
