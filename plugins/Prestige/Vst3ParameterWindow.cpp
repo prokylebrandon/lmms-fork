@@ -343,9 +343,26 @@ public:
 	/// Re-evaluate the filter (automation status can change without the
 	/// filter being touched). Only ever called on user actions / show, never
 	/// from the refresh timer, because the Automated scope is not free.
+	///
+	/// Deliberately a full proxy-side reset, not just invalidateFilter().
+	/// invalidateFilter() alone only re-runs filterAcceptsRow() and patches
+	/// the proxy's existing row-map; it does not unconditionally invalidate
+	/// whatever QTableView/QItemSelectionModel cached about the proxy's
+	/// rowCount() and section state. When this runs immediately after the
+	/// SOURCE model's own beginResetModel()/endResetModel() (setParameters()
+	/// calls this right after Vst3ParameterTableModel::setParameters(),
+	/// which resets the source), the view has already reacted once to the
+	/// source's reset before the proxy's row-map catches up, and in
+	/// practice ends up not re-querying the proxy again for the second,
+	/// proxy-only change -- the table then shows stale/empty rows until
+	/// something else (a resize, a manual filter edit) forces a re-query.
+	/// beginResetModel()/endResetModel() on the proxy itself is the one
+	/// signal every attached view is guaranteed to react to unconditionally.
 	void refresh()
 	{
+		beginResetModel();
 		invalidateFilter();
+		endResetModel();
 	}
 
 protected:
@@ -591,9 +608,11 @@ void Vst3ParameterWindow::setParameters(const std::vector<Vst3ParameterModel*>& 
 	// automatically re-running filterAcceptsRow() when the source model
 	// emits modelReset. The proxy clears its row-map on reset (so rowCount()
 	// drops to 0) but never rebuilds it, leaving the view empty even though
-	// the source now has rows. refresh() is Vst3ParameterFilterProxy's public
-	// wrapper around the protected QSortFilterProxyModel::invalidateFilter();
-	// it forces a full rebuild of the proxy's row-map against the new source.
+	// the source now has rows. refresh() forces that rebuild AND wraps it in
+	// the proxy's own beginResetModel()/endResetModel(), which is what
+	// actually guarantees the QTableView re-queries rowCount() and repaints
+	// -- invalidateFilter() alone was not reliably enough for the view to
+	// notice a proxy-only change arriving right after the source's own reset.
 	m_proxy->refresh();
 
 	m_messageLabel->setText(emptyMessage);

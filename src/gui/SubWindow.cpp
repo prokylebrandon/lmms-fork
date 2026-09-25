@@ -121,7 +121,18 @@ void SubWindow::paintEvent( QPaintEvent * )
 
 	const bool isActive = windowState() & Qt::WindowActive;
 
-	p.fillRect( rect, isActive ? activeColor() : p.pen().brush() );
+	// The inactive case used to fill with p.pen().brush() -- not a real
+	// color, just whatever brush a freshly-constructed QPainter's default
+	// pen happens to carry (implementation-defined, and in practice whatever
+	// paint state was last left on the device). That produced the
+	// intermittent thin vertical-line artifacts on inactive subwindows:
+	// visually different every time depending on prior paint state, rather
+	// than a stable fill. Qt::WindowText/Inactive-adjacent chrome
+	// conventionally falls back to the widget's own palette when no custom
+	// brush is set, same as the active case already does deliberately via
+	// activeColor() -- so mirror that instead of leaving the fill
+	// undefined.
+	p.fillRect( rect, isActive ? activeColor() : palette().window() );
 
 	// window border
 	p.setPen( borderColor() );

@@ -837,6 +837,54 @@ private:
 	std::function<void()> m_onClose;
 };
 
+/// Works around a resize-cursor-gets-stuck bug specific to the editor window.
+///
+/// Symptom: hovering the TOP edge of the editor's SubWindow shows the
+/// resize cursor as expected, but unlike every other edge/corner (and unlike
+/// every other instrument's SubWindow, which has no native child window),
+/// the cursor does not clear when the mouse moves back off the margin.
+///
+/// Cause: m_editorHost ("host" below) is a real native HWND (WA_NativeWindow
+/// + WA_PaintOnScreen, required so the plugin's own HWND can attach to it --
+/// see the comment in openEditorWindow()), parented directly under the
+/// SubWindow's HWND, with its top edge sitting immediately below the
+/// SubWindow's title bar / resize margin. QMdiSubWindow's resize-cursor
+/// tracking is Qt-level hover state on ONE HWND; every other instrument's
+/// editor is plain Qt widgets sharing that same HWND, so leaving the margin
+/// is always a same-HWND mouse-move Qt sees directly. Here, the moment the
+/// cursor crosses onto m_editorHost it crosses onto a SEPARATE native HWND,
+/// and Windows' own child-window cursor/hit-test handling for that boundary
+/// can intercept the transition before Qt's hover-leave logic on the parent
+/// SubWindow runs, so the resize override on the SubWindow is never cleared.
+///
+/// Fix: don't try to out-race that native boundary. Just watch for the
+/// mouse arriving on host (QEvent::Enter fires reliably; it's a normal Qt
+/// event on host's own widget, not something crossing the HWND boundary)
+/// and force the SubWindow's cursor back to normal ourselves at that point.
+/// Harmless if Qt had already cleared it correctly on its own.
+class EditorHostCursorFilter : public QObject
+{
+public:
+	EditorHostCursorFilter(QObject* parent, QPointer<SubWindow> window) :
+		QObject(parent),
+		m_window(std::move(window))
+	{
+	}
+
+protected:
+	bool eventFilter(QObject* watched, QEvent* event) override
+	{
+		if (event->type() == QEvent::Enter && m_window)
+		{
+			m_window->unsetCursor();
+		}
+		return QObject::eventFilter(watched, event);
+	}
+
+private:
+	QPointer<SubWindow> m_window;
+};
+
 /// IPlugView sizes are physical pixels on Windows/Linux but logical units on
 /// macOS (see the comment above IPlugView in the SDK's iplugview.h), while Qt
 /// widget sizes are always logical.  Without this, on a 125%/150% scaled
@@ -1162,6 +1210,13 @@ void PrestigeView::openEditorWindow(bool userInitiated)
 
 	m_editorHost = host;
 	m_editorWindow = window;
+
+	// See EditorHostCursorFilter's comment: host is a native HWND sitting
+	// right at the SubWindow's top resize margin, which leaves the resize
+	// cursor stuck on that edge specifically (every other edge, and every
+	// other instrument's SubWindow, is unaffected). Installed on host, not
+	// window, since it needs QEvent::Enter for host itself.
+	host->installEventFilter(new EditorHostCursorFilter(host, window));
 
 	// Step 3: attach.  winId() forces creation of the native HWND (the call
 	// to winId() below is what actually creates it).  On Windows we must also
