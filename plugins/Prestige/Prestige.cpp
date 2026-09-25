@@ -50,6 +50,10 @@
 #include "Song.h"
 #include "Vst3ParameterModel.h"
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 namespace lmms
 {
 
@@ -1142,6 +1146,11 @@ void PrestigeView::openEditorWindow(bool userInitiated)
 	// widget must be a real native window (WA_NativeWindow).
 	auto* host = new QWidget;
 	host->setAttribute(Qt::WA_NativeWindow);
+	// WA_PaintOnScreen: tell Qt not to use its backing store for this widget.
+	// Without it Qt composites its own backing-store paint over the embedded
+	// native child window on every repaint, producing overdraw artefacts
+	// (the "line glitches" seen when other LMMS windows overlap the editor).
+	host->setAttribute(Qt::WA_PaintOnScreen);
 	host->setFixedSize(toWidgetSize(host, width, height));
 
 	// Same wrapper Vestige uses for its native editor windows.  Closing must
@@ -1154,10 +1163,27 @@ void PrestigeView::openEditorWindow(bool userInitiated)
 	m_editorHost = host;
 	m_editorWindow = window;
 
-	// Step 3: attach.  winId() forces creation of the native window; the
-	// handle is an HWND on Windows, an NSView* on macOS, an X11 window id on
-	// Linux, which is exactly what each IPlugView platform type expects.
-	if (!m_pi->attachEditor(reinterpret_cast<void*>(host->winId()), &error))
+	// Step 3: attach.  winId() forces creation of the native HWND (the call
+	// to winId() below is what actually creates it).  On Windows we must also
+	// set WS_CLIPCHILDREN on the host HWND and WS_CLIPSIBLINGS on the plugin's
+	// own HWND so that GDI clips their painting to their respective window
+	// rectangles and they do not overdraw sibling Qt widgets.  This is a
+	// Windows-only requirement; the VST3 SDK's IPlugView contract is silent on
+	// it, so it must be applied by the host.
+	//
+	// Order matters: winId() must be called first (it creates the HWND), then
+	// SetWindowLongPtr can touch it, and only then is the handle passed to
+	// attachEditor() so the plugin creates its child inside an already-clipping
+	// parent.
+	const WId hostWinId = host->winId();
+#ifdef Q_OS_WIN
+	{
+		const HWND hwnd = reinterpret_cast<HWND>(hostWinId);
+		LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+		SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+	}
+#endif
+	if (!m_pi->attachEditor(reinterpret_cast<void*>(hostWinId), &error))
 	{
 		closeEditorWindow();
 		m_pi->setEditorWanted(false);
