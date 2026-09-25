@@ -118,6 +118,144 @@ bool editorSizeIsSane(int w, int h)
     return w > 0 && h > 0 && w <= kMaxEditorDimension && h <= kMaxEditorDimension;
 }
 
+// ---------------------------------------------------------------------------
+// Lock-free pending queues (Phase 3 performance item -- replaces the
+// mutex-protected pending/active vector pairs from Phase 2)
+// ---------------------------------------------------------------------------
+
+/// One queued LMMS -> plugin parameter write, delivered to the processor on
+/// the next processAudio() call.
+struct PendingParamChange
+{
+    Vst3ParamID id;
+    double      value;
+};
+
+/// One queued MIDI event, delivered to the processor on the next
+/// processAudio() call.
+struct PendingMidiEvent
+{
+    MidiEvent event;
+    int       sampleOffset;
+};
+
+/// Bounded, lock-free, multi-producer multi-consumer ring buffer (the
+/// classic Vyukov MPMC bounded queue: a per-slot sequence counter, rather
+/// than a single head/tail pair, is what lets multiple producers and
+/// multiple consumers race on the same slots safely without a lock).
+///
+/// Used for both PendingParamChange and PendingMidiEvent. @p Capacity must
+/// be a power of two so "index & (Capacity - 1)" can replace a modulo.
+///
+/// Every slot's payload is a std::optional<T> rather than a bare T so that
+/// the queue never needs T to be default-constructible -- only copy- (push)
+/// and move-or-copy- (pop) capable, which is all callers already rely on
+/// elsewhere (e.g. PendingMidiEvent is built from a MidiEvent copy in
+/// queueMidiEvent()). Capacity is fixed at construction and never grows:
+/// push() on a full queue fails rather than allocating.
+template<typename T, std::size_t Capacity>
+class Vst3LockFreeQueue
+{
+    static_assert(Capacity >= 2 && (Capacity& (Capacity - 1)) == 0,
+                  "Vst3LockFreeQueue capacity must be a power of two");
+
+public:
+    Vst3LockFreeQueue() : m_cells(Capacity)
+    {
+        for (std::size_t i = 0; i < Capacity; ++i)
+        {
+            m_cells[i].sequence.store(i, std::memory_order_relaxed);
+        }
+        m_enqueuePos.store(0, std::memory_order_relaxed);
+        m_dequeuePos.store(0, std::memory_order_relaxed);
+    }
+
+    Vst3LockFreeQueue(const Vst3LockFreeQueue&)            = delete;
+    Vst3LockFreeQueue& operator=(const Vst3LockFreeQueue&) = delete;
+
+    /// Never allocates, never blocks. Returns false (item not enqueued) if
+    /// the queue is full -- the caller counts the drop; retrying here could
+    /// spin a realtime thread against a stalled consumer.
+    bool push(const T& item)
+    {
+        Cell* cell = nullptr;
+        std::size_t pos = m_enqueuePos.load(std::memory_order_relaxed);
+        for (;;)
+        {
+            cell = &m_cells[pos & kMask];
+            const std::size_t seq = cell->sequence.load(std::memory_order_acquire);
+            const auto diff = static_cast<std::intptr_t>(seq) - static_cast<std::intptr_t>(pos);
+            if (diff == 0)
+            {
+                if (m_enqueuePos.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed))
+                {
+                    break;
+                }
+            }
+            else if (diff < 0)
+            {
+                return false; // full
+            }
+            else
+            {
+                pos = m_enqueuePos.load(std::memory_order_relaxed);
+            }
+        }
+        cell->data = item;
+        cell->sequence.store(pos + 1, std::memory_order_release);
+        return true;
+    }
+
+    /// Never allocates, never blocks. Returns std::nullopt if the queue is
+    /// currently empty. Returning by value (rather than writing into a
+    /// caller-supplied T&) means a caller never has to default-construct a
+    /// T just to have somewhere to pop into -- only move/copy-construction
+    /// is required, which push() already relies on.
+    std::optional<T> pop()
+    {
+        Cell* cell = nullptr;
+        std::size_t pos = m_dequeuePos.load(std::memory_order_relaxed);
+        for (;;)
+        {
+            cell = &m_cells[pos & kMask];
+            const std::size_t seq = cell->sequence.load(std::memory_order_acquire);
+            const auto diff = static_cast<std::intptr_t>(seq) - static_cast<std::intptr_t>(pos + 1);
+            if (diff == 0)
+            {
+                if (m_dequeuePos.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed))
+                {
+                    break;
+                }
+            }
+            else if (diff < 0)
+            {
+                return std::nullopt; // empty
+            }
+            else
+            {
+                pos = m_dequeuePos.load(std::memory_order_relaxed);
+            }
+        }
+        std::optional<T> result(std::move(cell->data));
+        cell->data.reset();
+        cell->sequence.store(pos + kMask + 1, std::memory_order_release);
+        return result;
+    }
+
+private:
+    static constexpr std::size_t kMask = Capacity - 1;
+
+    struct Cell
+    {
+        std::atomic<std::size_t> sequence;
+        std::optional<T>         data;
+    };
+
+    std::vector<Cell>          m_cells;
+    std::atomic<std::size_t>   m_enqueuePos;
+    std::atomic<std::size_t>   m_dequeuePos;
+};
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -632,13 +770,18 @@ bool Vst3PluginInstance::initAudioSetup(double sampleRate, int blockSize, QStrin
     m_inputPtrs.resize(2);
     m_outputPtrs.resize(2);
 
-    // Reserve the event/parameter queues up front so that pushing from the
-    // GUI/MIDI threads and swapping on the audio thread never allocate in
-    // the common case.
-    m_pendingParamChanges.reserve(1024);
-    m_pendingMidiEvents.reserve(1024);
-    m_activeParamChanges.reserve(1024);
-    m_activeMidiEvents.reserve(1024);
+    // Allocate the lock-free pending queues once, up front: push()/pop() on
+    // them never allocate, so everything they need is in place before the
+    // first processAudio() call.
+    m_paramQueue = new Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>();
+    m_midiQueue  = new Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>();
+
+    // Belt-and-suspenders alongside m_activeNotes's own NSDMI: explicitly
+    // establish the known-empty starting state before this instance is
+    // reachable from queueMidiEvent()/flushActiveNotes().
+    for (auto& row : m_activeNotes)
+        for (auto& note : row)
+            note.store(false, std::memory_order_relaxed);
 
     return true;
 }
@@ -673,6 +816,7 @@ void Vst3PluginInstance::loadParameters()
         p.isReadOnly     = (pi.flags & F::kIsReadOnly)     != 0;
         p.isBypass       = (pi.flags & F::kIsBypass)       != 0;
         p.isProgramChange= (pi.flags & F::kIsProgramChange)!= 0;
+        p.isHidden       = (pi.flags & F::kIsHidden)       != 0;
 
         m_parameters.push_back(p);
     }
@@ -691,6 +835,15 @@ Vst3PluginInstance::~Vst3PluginInstance()
     // Ensure processing is stopped before tearing down
     if (m_processing)
         stopProcessing();
+
+    // Pending queues: nothing after this point pushes to or drains them.
+    // delete on a null pointer is a no-op, so this is safe even for a
+    // load() that failed before initAudioSetup() reached the allocation
+    // below and never created them.
+    delete static_cast<Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*>(m_paramQueue);
+    delete static_cast<Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>*>(m_midiQueue);
+    m_paramQueue = nullptr;
+    m_midiQueue  = nullptr;
 
     // Disconnect IConnectionPoint
     if (m_compConnection && m_ctrlConnection)
@@ -817,25 +970,21 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     auto* proc = cast<Steinberg::Vst::IAudioProcessor>(m_audioProcessor);
 
     // ---- Take everything queued since the last block ----
-    // The lock covers two vector swaps only.  Producers (MIDI thread, GUI
-    // thread, the plugin editor's performEdit) push under the same mutex.
-    {
-        std::lock_guard<std::mutex> lock(m_queueMutex);
-        m_activeParamChanges.swap(m_pendingParamChanges);
-        m_activeMidiEvents.swap(m_pendingMidiEvents);
-    }
+    // Lock-free drain: pop() never blocks, so a producer racing this loop
+    // just shows up on the NEXT processAudio() call instead of this one,
+    // same as it would have after a mutex unlock in the old implementation.
+    auto* paramQueue = static_cast<Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*>(m_paramQueue);
+    auto* midiQueue  = static_cast<Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>*>(m_midiQueue);
 
     // ---- Build per-block parameter changes ----
     Vst3ParameterChanges paramChanges;
-    for (const auto& pc : m_activeParamChanges)
-        paramChanges.addChange(pc.id, pc.value);
-    m_activeParamChanges.clear();
+    while (auto pc = paramQueue->pop())
+        paramChanges.addChange(pc->id, pc->value);
 
     // ---- Build per-block event list ----
     Vst3EventList eventList;
-    for (const auto& pe : m_activeMidiEvents)
-        eventList.addMidiEvent(pe.event, pe.sampleOffset);
-    m_activeMidiEvents.clear();
+    while (auto pe = midiQueue->pop())
+        eventList.addMidiEvent(pe->event, pe->sampleOffset);
 
     // ---- De-interleave input (L R L R …) → planar (L… R…) ----
     const std::size_t nf = static_cast<std::size_t>(numFrames);
@@ -907,14 +1056,102 @@ void Vst3PluginInstance::processAudio(const float* inputs,
 
 void Vst3PluginInstance::queueMidiEvent(const MidiEvent& event, int sampleOffset)
 {
-    std::lock_guard<std::mutex> lock(m_queueMutex);
-    m_pendingMidiEvents.push_back({ event, sampleOffset });
+    // Active-note tracking, feeding flushActiveNotes() (see its doc
+    // comment and m_activeNotes' comment in the header). Mirrors
+    // Vst3EventList::addMidiEvent()'s own "velocity-0 NoteOn is treated as
+    // NoteOff by convention" so tracking agrees with what the plugin
+    // actually receives.
+    const bool isNoteOn  = event.type() == MidiNoteOn && event.velocity() > 0;
+    const bool isNoteOff = event.type() == MidiNoteOff
+        || (event.type() == MidiNoteOn && event.velocity() == 0);
+
+    const int channel = event.channel();
+    const int key      = event.key();
+    const bool inRange = channel >= 0 && channel < MidiChannelCount
+        && key >= 0 && key <= MidiMaxKey;
+
+    auto* queue = static_cast<Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>*>(m_midiQueue);
+    const bool pushed = queue && queue->push({ event, sampleOffset });
+
+    if (inRange && isNoteOn)
+    {
+        // Optimistic: mark active even if the push above was dropped.
+        // Worst case is one harmless extra NoteOff later, from
+        // flushActiveNotes(), for a note the plugin never actually
+        // started -- see the header comment for the reasoning and why
+        // the NoteOff side below is NOT symmetric with this.
+        m_activeNotes[channel][key].store(true, std::memory_order_relaxed);
+    }
+    else if (inRange && isNoteOff && pushed)
+    {
+        // Only clear on a CONFIRMED delivery: if this NoteOff itself was
+        // dropped, the plugin may still believe the note is held, so
+        // flushActiveNotes() must still account for it.
+        m_activeNotes[channel][key].store(false, std::memory_order_relaxed);
+    }
+
+    if (!pushed)
+    {
+        // Either called before initAudioSetup() allocated the queue (should
+        // not happen -- every public entry point that reaches here implies
+        // a constructed instance), or the queue is full. Count, don't log:
+        // this can be called from the audio thread, where a qWarning() call
+        // would itself be a realtime-safety violation.
+        m_droppedMidiEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void Vst3PluginInstance::flushActiveNotes()
+{
+    // See the header's doc comment for the full contract, in particular
+    // the threading requirement this relies on the CALLER to provide.
+    if (!m_processing)
+        return;
+
+    bool anyQueued = false;
+    for (int channel = 0; channel < MidiChannelCount; ++channel)
+    {
+        for (int key = 0; key <= MidiMaxKey; ++key)
+        {
+            if (m_activeNotes[channel][key].load(std::memory_order_relaxed))
+            {
+                // Routed through queueMidiEvent() itself (not pushed to
+                // the queue directly) so the same tracking logic above
+                // clears the flag on confirmed delivery, and so a plugin
+                // with a genuinely full queue right now still gets the
+                // same drop-and-count treatment as any other MIDI event
+                // rather than a silently different code path here.
+                queueMidiEvent(MidiEvent(MidiNoteOff, static_cast<int8_t>(channel),
+                                          static_cast<int16_t>(key), 0),
+                               0);
+                anyQueued = true;
+            }
+        }
+    }
+
+    if (!anyQueued)
+        return;
+
+    // Deliver the queued NoteOffs into the processor now, synchronously,
+    // rather than waiting for a processAudio() call that will never come
+    // once the caller proceeds to stopProcessing(). Output is discarded;
+    // this is silence-in, silence-out from LMMS's point of view -- the
+    // point is delivering the events, not the audio this block produces.
+    std::vector<float> silence(static_cast<std::size_t>(m_blockSize) * 2, 0.0f);
+    std::vector<float> discard(static_cast<std::size_t>(m_blockSize) * 2, 0.0f);
+    processAudio(m_hasInputBus ? silence.data() : nullptr, discard.data(), m_blockSize);
 }
 
 void Vst3PluginInstance::clearMidiQueue()
 {
-    std::lock_guard<std::mutex> lock(m_queueMutex);
-    m_pendingMidiEvents.clear();
+    auto* queue = static_cast<Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>*>(m_midiQueue);
+    if (!queue)
+        return;
+    while (queue->pop())
+    {
+        // Discard: this is a deliberate flush (e.g. transport stop), not a
+        // drain into the processor.
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -939,8 +1176,15 @@ std::optional<double> Vst3PluginInstance::getParameterNormalized(Vst3ParamID id)
 
 void Vst3PluginInstance::queueForProcessor(Vst3ParamID id, double value)
 {
-    std::lock_guard<std::mutex> lock(m_queueMutex);
-    m_pendingParamChanges.push_back({ id, value });
+    auto* queue = static_cast<Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*>(m_paramQueue);
+    if (!queue || !queue->push({ id, value }))
+    {
+        // See queueMidiEvent()'s matching comment: counted, not logged,
+        // because this can run on the audio thread (automation applied
+        // during playback ends up here via Vst3ParameterModel::
+        // onModelChanged() -> queueParameterChange() -> here).
+        m_droppedParamChanges.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void Vst3PluginInstance::queueParameterChange(Vst3ParamID id, double normalisedValue)
@@ -1223,6 +1467,78 @@ bool Vst3PluginInstance::restoreState(const QByteArray& data)
     }
 
     return true;
+}
+
+bool Vst3PluginInstance::hasSeparateControllerState() const
+{
+    if (!m_component || !m_controller) return false;
+
+    auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
+    auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
+
+    Steinberg::FUnknown* compUnk = nullptr;
+    Steinberg::FUnknown* ctrlUnk = nullptr;
+    comp->queryInterface(Steinberg::FUnknown::iid, reinterpret_cast<void**>(&compUnk));
+    ctrl->queryInterface(Steinberg::FUnknown::iid, reinterpret_cast<void**>(&ctrlUnk));
+    const bool sameObj = (compUnk == ctrlUnk);
+    if (compUnk) compUnk->release();
+    if (ctrlUnk) ctrlUnk->release();
+
+    return !sameObj;
+}
+
+QByteArray Vst3PluginInstance::saveComponentState() const
+{
+    if (!m_component) return {};
+
+    auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
+    Vst3MemoryStream stream;
+    comp->getState(&stream);
+    return stream.buffer();
+}
+
+QByteArray Vst3PluginInstance::saveControllerState() const
+{
+    // Deliberately empty for a single-object plugin: there is nothing
+    // distinct from the component's own state to save (see the header's
+    // doc comment), and an empty return is exactly what
+    // restoreControllerState() below refuses to accept, keeping the two
+    // symmetric.
+    if (!hasSeparateControllerState()) return {};
+
+    auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
+    Vst3MemoryStream stream;
+    ctrl->getState(&stream);
+    return stream.buffer();
+}
+
+bool Vst3PluginInstance::restoreComponentState(const QByteArray& data)
+{
+    if (!m_component || data.isEmpty()) return false;
+
+    auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
+    Vst3MemoryStream compStream(data);
+    if (comp->setState(&compStream) != Steinberg::kResultOk)
+        return false;
+
+    // Sync controller with the just-restored component state, same as
+    // restoreState() already does for the combined-blob path above.
+    if (m_controller)
+    {
+        auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
+        Vst3MemoryStream syncStream(data);
+        ctrl->setComponentState(&syncStream);
+    }
+    return true;
+}
+
+bool Vst3PluginInstance::restoreControllerState(const QByteArray& data)
+{
+    if (!hasSeparateControllerState() || data.isEmpty()) return false;
+
+    auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
+    Vst3MemoryStream stream(data);
+    return ctrl->setState(&stream) == Steinberg::kResultOk;
 }
 
 } // namespace lmms

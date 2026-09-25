@@ -67,23 +67,45 @@ class PrestigeView;
  * parameter list/inspector window, versioned project state, and graceful
  * handling of a plugin that is missing when a project is opened.
  *
- * Still to come (Phase 3, second half): the full 9-step in-place plugin
- * replacement sequence -- loadFile() and loadSettings() still always tear
- * down before loading -- plus presets, the crash-containment audit,
- * realtime-path work and tests.
+ * Phase 3 Part 2 progress: closePluginLocked() now sends an explicit
+ * NoteOff for every note it believes is held before tearing a plugin down
+ * (see Vst3PluginInstance::flushActiveNotes()), covering both plain unload
+ * and in-place replacement, since both already funnelled through the one
+ * function. Component/controller state is stored as two separate pieces
+ * when the plugin genuinely exposes them as separate objects (see
+ * Vst3PluginInstance::hasSeparateControllerState()), one combined blob
+ * otherwise, same as before.
+ *
+ * Still to come: presets, the crash-containment audit, cross-platform
+ * grep, the test suite, and docs/handoff notes -- see
+ * PRESTIGE-Phase-3-Part-2.md's punch list for the full, current state of
+ * each item.
  *
  * Saved project format (see saveSettings()/loadSettings()):
  *
- *   <prestige version="1" bundlepath=".." classcid=".." pluginname=".."
+ *   <prestige version="2" bundlepath=".." classcid=".." pluginname=".."
  *             pluginvendor="..">
- *     <state format="combined">base64</state>   plugin-owned state blob
+ *     <state format="combined">base64</state>
+ *       -- OR, when the plugin has a genuinely separate controller object --
+ *     <state format="separate">
+ *       <component>base64</component>
+ *       <controller>base64</controller>
+ *     </state>
  *     <parameters><param id=".." ../>...</parameters>   host-side, by ID
  *     <ui editor="0|1" parameters="0|1"/>       UI state
  *   </prestige>
  *
  * Each of those is its own piece of saved data. A project saved before
  * versioning existed has no "version" attribute and is read as version 0,
- * which has the same layout minus name/vendor/ui.
+ * which has the same layout minus name/vendor/ui (and, since it predates
+ * the "format" attribute too, is always the "combined" shape). A version-1
+ * project (Part 1 / early Part 2) always has format="combined" as well --
+ * "separate" only appears from this build onward, which is why it needed
+ * version bumped to 2: an older PRESTIGE build (kSaveVersion 1, no format
+ * check before reading <state>'s text) would otherwise misread a
+ * "separate" node's two child elements as one garbled combined blob
+ * instead of refusing the file. See applySavedElement()'s comment on the
+ * "format" attribute for the read side of this.
  */
 class PrestigeInstrument : public Instrument
 {
@@ -95,7 +117,11 @@ public:
 	/// element. Bump it whenever the saved layout changes in a way an older
 	/// PRESTIGE could misread; loadSettings() refuses (without altering the
 	/// data) anything newer than this.
-	static constexpr int kSaveVersion = 1;
+	///
+	/// 1 -> 2 (Phase 3 Part 2): <state> can now be format="separate" (two
+	/// child elements) instead of always one combined text node -- see the
+	/// class comment above and applySavedElement()'s "format" handling.
+	static constexpr int kSaveVersion = 2;
 
 	/// Why there is (or is not) a running plugin. Anything other than Empty
 	/// and Loaded means a plugin is recorded in the project but could not be

@@ -53,6 +53,15 @@ struct Vst3Parameter
     bool        isReadOnly    = false;
     bool        isBypass      = false;
     bool        isProgramChange = false;
+
+    /// From VST3's kIsHidden flag: the plugin doesn't want this parameter
+    /// shown in a generic host UI (it may still be automatable/readable --
+    /// hidden is a UI hint, not a capability restriction). The parameter
+    /// window hides these by default, with a "show hidden" option; see
+    /// doc/prestige-vst3.md's Phase 3 notes for why PRESTIGE still builds
+    /// a model and exposes it (e.g. to automation) rather than dropping it
+    /// entirely.
+    bool        isHidden      = false;
 };
 
 } // namespace lmms

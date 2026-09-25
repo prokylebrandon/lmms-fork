@@ -174,13 +174,32 @@ void PrestigeInstrument::closePluginLocked()
 		// be repeated at each call site.
 		teardownParameterModels();
 
-		// Known rough edge (flagged for Phase 3, per the prompt's request
-		// to report rather than paper over these): this does not send an
-		// explicit all-notes-off/flush before tearing down. Stage 1 uses
-		// the single InstrumentPlayHandle model (not per-note
-		// NotePlayHandles), so there's no LMMS-side stuck NotePlayHandle
-		// risk, but a plugin with internal voices still ringing gets torn
-		// down mid-note rather than released cleanly.
+		// Part 2 fix for the rough edge flagged in Part 1: send an explicit
+		// NoteOff for anything still held down, and deliver it into the
+		// plugin, BEFORE we stop processing -- a plugin with internal
+		// voices still ringing now gets a clean release instead of being
+		// torn down mid-note. Order matters: flushActiveNotes() requires
+		// m_processing still true (it delivers synchronously via one more
+		// processAudio() call), so it must run before stopProcessing().
+		// It reuses queueMidiEvent()'s own drop/count handling internally,
+		// so a queue that is somehow already full here degrades the same
+		// way any other MIDI burst would, rather than needing separate
+		// handling.
+		//
+		// This covers plugin replacement equally with plain unload: both
+		// funnel through this one function (see the class comment above
+		// teardownParameterModels()), which is what the Part 2 prompt
+		// asked to verify.
+		//
+		// Residual caveat, NOT fully verified: Vst3PluginInstance tracks
+		// "currently held" purely from the NoteOn/NoteOff events PRESTIGE
+		// itself queued (see its m_activeNotes doc comment) -- it cannot
+		// know about a note the plugin considers active for some other
+		// reason (e.g. its own internal arpeggiator/sequencer holding a
+		// voice with no corresponding host-sent NoteOn). Such a plugin can
+		// still ring past teardown; nothing observed in this codebase
+		// exercises that case, so it's flagged rather than assumed absent.
+		m_plugin->flushActiveNotes();
 		m_plugin->clearMidiQueue();
 		m_plugin->stopProcessing();
 		m_plugin.reset();
@@ -531,14 +550,41 @@ void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 	if (m_plugin)
 	{
 		// --- piece 3: plugin-owned state -----------------------------------
-		// Vst3PluginInstance::saveState() currently packs component and
-		// controller state into ONE blob, so that is what is stored; the
-		// "format" attribute leaves room to store them separately later
-		// without a stored blob being misread.
-		const QByteArray state = m_plugin->saveState();
+		// Vst3PluginInstance::saveState() packs component and controller
+		// state into ONE blob; that combined format is still what most
+		// plugins get, since most expose one object for both interfaces
+		// (Vst3PluginInstance::hasSeparateControllerState() is false).
+		// Where the plugin genuinely separates them, store the two pieces
+		// under their own elements instead, so a save/restore round trip
+		// no longer has to reassemble/split a blob whose internal layout
+		// is really the plugin's business, not PRESTIGE's. The "format"
+		// attribute is what a reader checks BEFORE calling .text() on
+		// <state> -- see applySavedElement() -- so a "separate" blob is
+		// never misread as one combined text node (and vice versa); that
+		// is also why this needed kSaveVersion bumped to 2, so a Part-1-
+		// only reader (kSaveVersion 1, no format check) refuses the file
+		// instead of doing exactly that misread.
 		QDomElement stateNode = doc.createElement("state");
-		stateNode.setAttribute("format", "combined");
-		stateNode.appendChild(doc.createTextNode(QString::fromLatin1(state.toBase64())));
+		if (m_plugin->hasSeparateControllerState())
+		{
+			stateNode.setAttribute("format", "separate");
+
+			const QByteArray compState = m_plugin->saveComponentState();
+			QDomElement compNode = doc.createElement("component");
+			compNode.appendChild(doc.createTextNode(QString::fromLatin1(compState.toBase64())));
+			stateNode.appendChild(compNode);
+
+			const QByteArray ctrlState = m_plugin->saveControllerState();
+			QDomElement ctrlNode = doc.createElement("controller");
+			ctrlNode.appendChild(doc.createTextNode(QString::fromLatin1(ctrlState.toBase64())));
+			stateNode.appendChild(ctrlNode);
+		}
+		else
+		{
+			stateNode.setAttribute("format", "combined");
+			const QByteArray state = m_plugin->saveState();
+			stateNode.appendChild(doc.createTextNode(QString::fromLatin1(state.toBase64())));
+		}
 		parent.appendChild(stateNode);
 
 		// --- piece 4: host-side parameter/automation state ------------------
@@ -573,12 +619,57 @@ void PrestigeInstrument::applySavedElement(const QDomElement& element)
 	const QDomElement stateNode = element.firstChildElement("state");
 	if (!stateNode.isNull())
 	{
-		const QByteArray state = QByteArray::fromBase64(stateNode.text().toLatin1());
-		if (!state.isEmpty() && !m_plugin->restoreState(state))
+		// Check "format" BEFORE touching .text(): for a "separate" node,
+		// .text() would concatenate the <component> and <controller> child
+		// elements' base64 text into one garbled string (QDomElement::text()
+		// walks every descendant text node) -- exactly the misread
+		// saveSettings()'s comment on this attribute exists to prevent.
+		// Missing/"combined" (including every version-0/1 project, which
+		// predates this attribute existing at all) is the plain single
+		// text-node blob restoreState() has always expected.
+		const QString format = stateNode.attribute("format", "combined");
+		bool restored = true;
+		bool anyState = false;
+
+		if (format == QLatin1String("separate"))
+		{
+			const QDomElement compNode = stateNode.firstChildElement("component");
+			const QDomElement ctrlNode = stateNode.firstChildElement("controller");
+
+			const QByteArray compState = QByteArray::fromBase64(compNode.text().toLatin1());
+			if (!compState.isEmpty())
+			{
+				anyState = true;
+				restored = m_plugin->restoreComponentState(compState) && restored;
+			}
+
+			const QByteArray ctrlState = QByteArray::fromBase64(ctrlNode.text().toLatin1());
+			if (!ctrlState.isEmpty())
+			{
+				anyState = true;
+				// Only meaningful if this instance's controller is also
+				// separate; a plugin that changed shape between save and
+				// load (unlikely, but not something to crash over) simply
+				// has this saved piece silently unusable, same treatment
+				// as any other saved data a different plugin can't apply.
+				restored = m_plugin->restoreControllerState(ctrlState) && restored;
+			}
+		}
+		else
+		{
+			const QByteArray state = QByteArray::fromBase64(stateNode.text().toLatin1());
+			if (!state.isEmpty())
+			{
+				anyState = true;
+				restored = m_plugin->restoreState(state);
+			}
+		}
+
+		if (anyState && !restored)
 		{
 			// The plugin stays loaded and usable, at whatever state
 			// instantiatePlugin() left it in; say so rather than pretend.
-			qWarning("PRESTIGE: restoreState() failed for %s", qPrintable(m_plugin->name()));
+			qWarning("PRESTIGE: state restore failed for %s", qPrintable(m_plugin->name()));
 			m_warning = tr("Plugin state could not be restored.");
 		}
 	}

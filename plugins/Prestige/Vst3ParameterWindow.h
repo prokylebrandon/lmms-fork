@@ -34,6 +34,7 @@
 #include <memory>
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -120,6 +121,7 @@ private:
 
 	QLineEdit* m_searchEdit = nullptr;
 	QComboBox* m_scopeCombo = nullptr;
+	QCheckBox* m_showHiddenCheck = nullptr;
 	QLabel* m_countLabel = nullptr;
 	QLabel* m_messageLabel = nullptr;
 	QTableView* m_view = nullptr;

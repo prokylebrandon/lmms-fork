@@ -30,9 +30,10 @@
 
 #include <QString>
 #include <QByteArray>
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 #include <optional>
@@ -75,7 +76,9 @@ class SampleFrame;
  *  - All public methods except processAudio() must be called from the
  *    **main / GUI thread**.  (queueMidiEvent()/queueParameterChange()/
  *    clearMidiQueue() are additionally safe to call from any thread: they
- *    only touch the mutex-protected pending queues.)
+ *    only touch the lock-free pending queues -- see kQueueCapacity's
+ *    comment below for why they need to tolerate concurrent producers
+ *    *and* concurrent consumers, not just concurrent producers.)
  *  - processAudio() is called from the **audio thread** while the plugin is
  *    active.  The audio thread must never race against destruction: call
  *    stopProcessing() from the main thread and wait for it to complete
@@ -92,17 +95,30 @@ class SampleFrame;
  *  take down LMMS.  This is a documented, accepted tradeoff for Phase 1–2;
  *  see doc/prestige-vst3.md for details.
  *
- * Public API surface for Phase 2 (Prestige instrument)
- * -----------------------------------------------------
+ * Public API surface, Phase 1-2 plus Phase 3 Part 2 additions
+ * -----------------------------------------------------------
  *  Header:  plugins/Vst3Base/Vst3PluginInstance.h
  *  Factory: Vst3PluginInstance::load(path, classIndex, sampleRate, blockSize)
  *  Audio:   processAudio(inputs, outputs, numFrames)
- *  MIDI:    queueMidiEvent(MidiEvent, sampleOffset)
+ *  MIDI:    queueMidiEvent(MidiEvent, sampleOffset), clearMidiQueue(),
+ *           flushActiveNotes() [Part 2: explicit NoteOff for every note
+ *           this instance believes is held, delivered synchronously --
+ *           see its own doc comment for the threading requirement it
+ *           places on the caller], droppedMidiEventCount() [Part 2,
+ *           diagnostics]
  *  Params:  parameters(), queueParameterChange(id, normValue),
- *           setParameterEditedCallback(cb)
+ *           setParameterEditedCallback(cb), droppedParameterChangeCount()
+ *           [Part 2, diagnostics]
  *  Editor:  createEditor() / attachEditor() / closeEditor()
- *  State:   saveState() / restoreState(bytes)
+ *  State:   saveState() / restoreState(bytes) [combined component +
+ *           controller blob]; Part 2 adds hasSeparateControllerState(),
+ *           saveComponentState() / saveControllerState() and
+ *           restoreComponentState(bytes) / restoreControllerState(bytes)
+ *           for a plugin where those are genuinely two separate objects
  *  Info:    name(), vendor(), category(), isInstrument()
+ *  Parameters: Vst3Parameter now carries isHidden (Part 2, from VST3's
+ *           kIsHidden flag) alongside the existing isReadOnly/isBypass/
+ *           isProgramChange/isAutomatable flags.
  */
 #include "vst3base_export.h"
 
@@ -230,6 +246,47 @@ public:
     /** Discard all pending MIDI events (e.g. on transport stop). */
     void clearMidiQueue();
 
+    /**
+     * Diagnostics only: number of MIDI events dropped because the lock-free
+     * queue (see kQueueCapacity) was full when queueMidiEvent() was called.
+     * Expected to stay 0 for any real plugin/session; a nonzero value means
+     * something is producing far more than one audio block's worth of MIDI
+     * between processAudio() calls.
+     */
+    std::uint64_t droppedMidiEventCount() const { return m_droppedMidiEvents.load(std::memory_order_relaxed); }
+
+    /**
+     * Send an explicit NoteOff for every (channel, key) this instance
+     * believes is currently held down -- tracked from queueMidiEvent()
+     * calls, see m_activeNotes -- and deliver them into the plugin
+     * synchronously (not on the next processAudio() call: callers use
+     * this immediately before stopProcessing(), after which no further
+     * processAudio() call is coming). A no-op if nothing is tracked as
+     * active, or if the plugin is not currently processing.
+     *
+     * This is a best-effort clean release, not a guarantee: a plugin that
+     * manages voices independently of the NoteOff events it is sent can
+     * still cut off mid-note. What this fixes is PRESTIGE never even
+     * trying -- see PrestigeInstrument::closePluginLocked()'s previously
+     * flagged rough edge (it only cleared the pending-event queue, which
+     * does nothing for a note the plugin already started on a prior
+     * block).
+     *
+     * Threading: must be called from the same thread queueMidiEvent()'s
+     * "GUI thread" callers use, and -- unlike every other queueMidiEvent()
+     * caller -- the caller must additionally guarantee no other thread can
+     * be inside processAudio() for the duration of this call.
+     * Vst3PluginInstance has no lock of its own around processAudio(); see
+     * PrestigeInstrument::closePluginLocked(), which holds m_pluginMutex
+     * for the whole call (the same mutex PrestigeInstrument::play() takes
+     * before calling processAudio()) -- that external lock is what makes
+     * this safe there. A future caller (e.g. Phase 4's effect) needs the
+     * equivalent guarantee from its own host integration; record this
+     * requirement for that phase, per the Part 2 prompt's instruction to
+     * track every public Vst3Base API change.
+     */
+    void flushActiveNotes();
+
     // ------------------------------------------------------------------ //
     // Parameters  (main thread)
     // ------------------------------------------------------------------ //
@@ -252,6 +309,14 @@ public:
      * Identity is always the VST3 parameter ID, never a positional index.
      */
     void queueParameterChange(Vst3ParamID id, double normalisedValue);
+
+    /**
+     * Diagnostics only: number of parameter changes dropped because the
+     * lock-free queue (see kQueueCapacity) was full when queueParameterChange()
+     * or the internal queueForProcessor() was called. Expected to stay 0; see
+     * droppedMidiEventCount().
+     */
+    std::uint64_t droppedParameterChangeCount() const { return m_droppedParamChanges.load(std::memory_order_relaxed); }
 
     /**
      * Plugin -> LMMS: register a callback fired when the plugin's own
@@ -321,6 +386,50 @@ public:
      * saveState().  Returns false on failure.
      */
     bool restoreState(const QByteArray& data);
+
+    /**
+     * True when the component and controller are genuinely two separate
+     * VST3 objects (as opposed to one object implementing both interfaces
+     * -- see initController()'s "single-object plugin" path). Callers that
+     * want to store component/controller state as two separate pieces
+     * (rather than the one combined blob saveState() produces) should only
+     * do so when this is true; for a single-object plugin, saveState()'s
+     * combined blob already IS just the component's own state; storing the
+     * same thing twice under two different tags on save/restore is exactly
+     * what saveControllerState() below refuses to do here.
+     */
+    bool hasSeparateControllerState() const;
+
+    /**
+     * Serialise ONLY the component's state. Always meaningful, whether or
+     * not the controller is a separate object.  Returns an empty
+     * QByteArray on failure.
+     */
+    QByteArray saveComponentState() const;
+
+    /**
+     * Serialise ONLY the controller's state.  Returns an empty QByteArray
+     * when there is no controller, when it is the same object as the
+     * component (hasSeparateControllerState() is false -- there is nothing
+     * distinct to save), or on failure.
+     */
+    QByteArray saveControllerState() const;
+
+    /**
+     * Restore component state saved by saveComponentState(), and sync the
+     * controller from it (IEditController::setComponentState()), same as
+     * restoreState() already does for the combined blob.  Returns false on
+     * failure or an empty @p data.
+     */
+    bool restoreComponentState(const QByteArray& data);
+
+    /**
+     * Restore controller state saved by saveControllerState().  Only valid
+     * when hasSeparateControllerState() is true; returns false otherwise
+     * (including for an empty @p data, since saveControllerState() never
+     * produces one for a plugin where this call would make sense).
+     */
+    bool restoreControllerState(const QByteArray& data);
 
     // ------------------------------------------------------------------ //
     // CMake / build variables for Phase 2 reference
@@ -397,24 +506,64 @@ private:
     // --- Parameters ---
     std::vector<Vst3Parameter> m_parameters;
 
-    // --- Pending queues (any thread -> audio thread) ---
-    // Producers (MIDI thread, GUI thread, plugin editor callbacks) push under
-    // m_queueMutex.  The audio thread swaps the pending vectors into the
-    // "active" ones under the same mutex and then works on them lock-free, so
-    // the lock is held only for two pointer swaps.  All four vectors are
-    // reserved up front; swap() never allocates.
+    // --- Pending queues (any thread -> audio thread), lock-free -----------
     //
-    // KNOWN LIMITATION: this is still a (very short) mutex on the audio
-    // thread.  Phase 3's performance pass should replace it with a lock-free
-    // ring buffer.
-    struct PendingParamChange { Vst3ParamID id; double value; };
-    struct PendingMidiEvent   { MidiEvent event; int sampleOffset; };
+    // Phase 2's mutex-protected pending/active vector pairs are gone (see
+    // doc/prestige-vst3.md's Phase 3 notes for the removed KNOWN LIMITATION
+    // comment this replaces). Each queue is now a bounded, lock-free MPMC
+    // ring buffer (Vst3LockFreeQueue, defined in the .cpp so this public
+    // header does not need to expose the template/atomics -- the same
+    // reasoning as the void* SDK pointers above). Multiple producers:
+    // queueMidiEvent()/queueParameterChange() are called from the GUI
+    // thread (manual edits) and, when automation is applied during
+    // playback, from the audio thread. There are also two consumers in
+    // practice, not one: processAudio() (audio thread) and clearMidiQueue()
+    // (GUI thread, e.g. transport stop or plugin teardown), so the queue
+    // has to tolerate concurrent consumers too -- hence MPMC, not an
+    // SPSC ring restricted to one producer and one consumer.
+    //
+    // push() never allocates and never blocks: against a full queue it
+    // drops the item and counts it (m_droppedMidiEvents / m_droppedParam-
+    // Changes) rather than retrying, since a retry loop on a realtime
+    // caller could stall against an audio thread that is itself stalled.
+    // kQueueCapacity is sized well beyond one block's worth of activity
+    // for any plugin encountered so far; the counters are the way to
+    // confirm that holds for a specific heavy plugin/session rather than
+    // assuming it.
+    static constexpr std::size_t kQueueCapacity = 2048; // must be a power of two
 
-    std::mutex                      m_queueMutex;
-    std::vector<PendingParamChange> m_pendingParamChanges;
-    std::vector<PendingMidiEvent>   m_pendingMidiEvents;
-    std::vector<PendingParamChange> m_activeParamChanges; // audio-thread only
-    std::vector<PendingMidiEvent>   m_activeMidiEvents;   // audio-thread only
+    void* m_paramQueue = nullptr; // Vst3LockFreeQueue<PendingParamChange>*, owned
+    void* m_midiQueue  = nullptr; // Vst3LockFreeQueue<PendingMidiEvent>*, owned
+
+    std::atomic<std::uint64_t> m_droppedParamChanges{0};
+    std::atomic<std::uint64_t> m_droppedMidiEvents{0};
+
+    // --- Active-note tracking (updated from queueMidiEvent(), any thread) -
+    //
+    // Feeds flushActiveNotes() only (see its doc comment above). A plain
+    // (channel, key) grid: MIDI notes are naturally identified by channel
+    // + 7-bit pitch, and Vst3EventList (see addMidiEvent()) always assigns
+    // VST3's noteId as -1 (host-unassigned) today, so there is no finer
+    // VST3-side identity to track even if two notes at the same
+    // (channel, key) briefly overlapped. Sized directly from Midi.h's
+    // MidiChannelCount / MidiMaxKey rather than a duplicated magic number.
+    //
+    // NOT verified: whether LMMS can ever send two NoteOns for the same
+    // (channel, key) without an intervening NoteOff (e.g. overlapping
+    // legato/retrigger at the LMMS level) -- if so, this tracker treats
+    // the second NoteOn as "still just one held note" and flushActiveNotes()
+    // sends one NoteOff, not two, which is the standard interpretation but
+    // worth confirming against real usage if a plugin ever seems to leave
+    // a voice ringing after a flush.
+    //
+    // Deliberately asymmetric about when it updates (see queueMidiEvent()'s
+    // matching comment in the .cpp): a NoteOn marks a note active even if
+    // queueing it was dropped (harmless over-approximation -- worst case,
+    // one spurious NoteOff later for a note the plugin never started); a
+    // NoteOff/velocity-0-NoteOn only clears the flag when the queue push
+    // actually succeeded, so a dropped NoteOff can never cause a stuck
+    // note to be skipped by flushActiveNotes().
+    std::atomic<bool> m_activeNotes[MidiChannelCount][MidiMaxKey + 1] {};
 };
 
 } // namespace lmms

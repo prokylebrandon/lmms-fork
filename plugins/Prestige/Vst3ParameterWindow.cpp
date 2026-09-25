@@ -25,6 +25,7 @@
 #include "Vst3ParameterWindow.h"
 
 #include <QAbstractTableModel>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFont>
 #include <QHBoxLayout>
@@ -329,6 +330,16 @@ public:
 		invalidateFilter();
 	}
 
+	/// Hidden parameters (Vst3Parameter::isHidden, from VST3's kIsHidden
+	/// flag) are excluded unless this is true. Off by default, per the
+	/// Part 2 prompt's "hide such parameters by default with a 'show
+	/// hidden' option".
+	void setShowHidden(bool show)
+	{
+		m_showHidden = show;
+		invalidateFilter();
+	}
+
 	/// Re-evaluate the filter (automation status can change without the
 	/// filter being touched). Only ever called on user actions / show, never
 	/// from the refresh timer, because the Automated scope is not free.
@@ -350,6 +361,10 @@ protected:
 		}
 		const Vst3Parameter& info = parameter->info();
 
+		if (info.isHidden && !m_showHidden)
+		{
+			return false;
+		}
 		if (m_scope == Scope::Writable && info.isReadOnly)
 		{
 			return false;
@@ -382,6 +397,7 @@ protected:
 private:
 	QStringList m_words;
 	Scope m_scope = Scope::All;
+	bool m_showHidden = false; // hidden parameters excluded by default
 };
 
 
@@ -452,10 +468,15 @@ Vst3ParameterWindow::Vst3ParameterWindow(QWidget* parent) :
 	m_scopeCombo->addItem(tr("Writable only"));
 	m_scopeCombo->addItem(tr("Automated or controlled only"));
 
+	m_showHiddenCheck = new QCheckBox(tr("Show hidden"), this);
+	m_showHiddenCheck->setToolTip(
+		tr("Also list parameters the plugin marked as hidden from a generic host UI."));
+
 	m_countLabel = new QLabel(this);
 
 	topRow->addWidget(m_searchEdit, 1);
 	topRow->addWidget(m_scopeCombo);
+	topRow->addWidget(m_showHiddenCheck);
 	topRow->addWidget(m_countLabel);
 	layout->addLayout(topRow);
 
@@ -525,6 +546,7 @@ Vst3ParameterWindow::Vst3ParameterWindow(QWidget* parent) :
 	connect(m_searchEdit, &QLineEdit::textChanged, this, &Vst3ParameterWindow::onFilterChanged);
 	connect(m_scopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
 		this, &Vst3ParameterWindow::onFilterChanged);
+	connect(m_showHiddenCheck, &QCheckBox::toggled, this, &Vst3ParameterWindow::onFilterChanged);
 	connect(m_view->selectionModel(), &QItemSelectionModel::currentRowChanged,
 		this, &Vst3ParameterWindow::onCurrentRowChanged);
 	connect(m_resetButton, &QPushButton::clicked, this, &Vst3ParameterWindow::resetSelected);
@@ -598,6 +620,7 @@ void Vst3ParameterWindow::onFilterChanged()
 {
 	m_proxy->setSearchText(m_searchEdit->text());
 	m_proxy->setScope(static_cast<Vst3ParameterFilterProxy::Scope>(m_scopeCombo->currentIndex()));
+	m_proxy->setShowHidden(m_showHiddenCheck->isChecked());
 	updateCount();
 }
 
