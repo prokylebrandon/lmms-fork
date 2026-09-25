@@ -344,25 +344,37 @@ public:
 	/// filter being touched). Only ever called on user actions / show, never
 	/// from the refresh timer, because the Automated scope is not free.
 	///
-	/// Deliberately a full proxy-side reset, not just invalidateFilter().
-	/// invalidateFilter() alone only re-runs filterAcceptsRow() and patches
-	/// the proxy's existing row-map; it does not unconditionally invalidate
-	/// whatever QTableView/QItemSelectionModel cached about the proxy's
-	/// rowCount() and section state. When this runs immediately after the
-	/// SOURCE model's own beginResetModel()/endResetModel() (setParameters()
-	/// calls this right after Vst3ParameterTableModel::setParameters(),
-	/// which resets the source), the view has already reacted once to the
-	/// source's reset before the proxy's row-map catches up, and in
-	/// practice ends up not re-querying the proxy again for the second,
-	/// proxy-only change -- the table then shows stale/empty rows until
-	/// something else (a resize, a manual filter edit) forces a re-query.
-	/// beginResetModel()/endResetModel() on the proxy itself is the one
-	/// signal every attached view is guaranteed to react to unconditionally.
+	/// Two earlier fixes both tried to force this by driving the PROXY's
+	/// own reset/invalidation primitives directly: first invalidateFilter()
+	/// alone, then invalidateFilter() wrapped in this proxy's own
+	/// beginResetModel()/endResetModel(). Both were confirmed (by the user,
+	/// against the real binary) NOT to fix the table failing to update on
+	/// browse or unload.
+	///
+	/// The likely reason: beginResetModel()/endResetModel() called directly
+	/// on a QSortFilterProxyModel -- rather than being triggered reactively
+	/// off the SOURCE model's own reset, which is the path Qt's proxy
+	/// implementation actually wires up to rebuild its internal
+	/// row-to-source mapping -- only emit the reset signals to attached
+	/// views; they do not by themselves rebuild the proxy's own mapping.
+	/// invalidateFilter() does rebuild that mapping, but nesting it *inside*
+	/// an explicit beginResetModel()/endResetModel() pair on the same model
+	/// (as the second attempt did) is not a normal, well-tested combination
+	/// either, and evidently did not reliably produce a working rebuild.
+	///
+	/// This instead detaches and reattaches the source model.
+	/// QAbstractProxyModel::setSourceModel() is the ordinary, heavily-used
+	/// path Qt itself relies on whenever a proxy's data source is swapped:
+	/// it emits the correct reset signals to every attached view AND
+	/// unconditionally rebuilds the row mapping from scratch, so correctness
+	/// here does not depend on the interaction between invalidateFilter()
+	/// and manually-driven reset calls that the two earlier attempts ran
+	/// into.
 	void refresh()
 	{
-		beginResetModel();
-		invalidateFilter();
-		endResetModel();
+		QAbstractItemModel* source = sourceModel();
+		setSourceModel(nullptr);
+		setSourceModel(source);
 	}
 
 protected:
@@ -606,13 +618,13 @@ void Vst3ParameterWindow::setParameters(const std::vector<Vst3ParameterModel*>& 
 
 	// The proxy has setDynamicSortFilter(false), which stops it from
 	// automatically re-running filterAcceptsRow() when the source model
-	// emits modelReset. The proxy clears its row-map on reset (so rowCount()
-	// drops to 0) but never rebuilds it, leaving the view empty even though
-	// the source now has rows. refresh() forces that rebuild AND wraps it in
-	// the proxy's own beginResetModel()/endResetModel(), which is what
-	// actually guarantees the QTableView re-queries rowCount() and repaints
-	// -- invalidateFilter() alone was not reliably enough for the view to
-	// notice a proxy-only change arriving right after the source's own reset.
+	// emits modelReset, so its row mapping does not update on its own just
+	// because the source above changed. refresh() forces that rebuild -- see
+	// its own comment for why this now goes through detaching/reattaching
+	// the source model rather than driving the proxy's reset/invalidation
+	// primitives directly (the two things tried before this, in that order,
+	// were confirmed against the real binary NOT to fix the table failing
+	// to update on browse or unload).
 	m_proxy->refresh();
 
 	m_messageLabel->setText(emptyMessage);

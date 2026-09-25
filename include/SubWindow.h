@@ -35,6 +35,7 @@
 class QGraphicsDropShadowEffect;
 class QLabel;
 class QPushButton;
+class QTimer;
 class QWidget;
 
 namespace lmms::gui
@@ -138,6 +139,7 @@ private:
 	QGraphicsDropShadowEffect * m_shadow;
 	bool m_hasFocus;
 	bool m_isDetachable;
+	QTimer* m_resizeCursorTimer;
 
 	//! @brief Stores the given text into the given label.
 	//!
@@ -155,6 +157,19 @@ private:
 
 private slots:
 	void focusChanged( QMdiSubWindow * subWindow );
+
+	//! @brief Clears a resize cursor left over from hovering an edge/corner
+	//! if the mouse is no longer actually near one.
+	//!
+	//! Works around a bug where a native child window sitting directly under
+	//! this window's title bar (see PrestigeView::openEditorWindow(), which
+	//! embeds a VST3 plugin editor's own HWND this way) can swallow the
+	//! mouse-move Qt would otherwise use to notice the pointer left the
+	//! resize margin, leaving the resize cursor stuck. Runs on a timer
+	//! rather than reacting to any specific event, since it is exactly the
+	//! event delivery for that native area that is unreliable here -- see
+	//! the implementation's comment for the full reasoning.
+	void checkResizeCursorStuck();
 };
 
 

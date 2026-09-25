@@ -30,6 +30,7 @@
 
 #include <algorithm>
 
+#include <QCursor>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
 #include <QLabel>
@@ -41,6 +42,7 @@
 #include <QPushButton>
 #include <QStyleOption>
 #include <QStyleOptionTitleBar>
+#include <QTimer>
 #include <QWindow>
 
 #include "ConfigManager.h"
@@ -105,6 +107,15 @@ SubWindow::SubWindow(QWidget* parent, Qt::WindowFlags windowFlags)
 	setWindowFlags((this->windowFlags() & ~Qt::WindowMinimizeButtonHint) | Qt::CustomizeWindowHint);
 
 	connect(mdiArea(), &QMdiArea::subWindowActivated, this, &SubWindow::focusChanged);
+
+	// See checkResizeCursorStuck()'s comment for why this exists and why it
+	// is a poll rather than an event hook. Runs for every SubWindow, not
+	// just ones that happen to host a native child, so it also covers any
+	// future instrument editor embedded the same way.
+	m_resizeCursorTimer = new QTimer(this);
+	m_resizeCursorTimer->setInterval(150);
+	connect(m_resizeCursorTimer, &QTimer::timeout, this, &SubWindow::checkResizeCursorStuck);
+	m_resizeCursorTimer->start();
 }
 
 
@@ -601,6 +612,67 @@ bool SubWindow::eventFilter(QObject* obj, QEvent* event)
 
 		default:
 			return QMdiSubWindow::eventFilter(obj, event);
+	}
+}
+
+
+void SubWindow::checkResizeCursorStuck()
+{
+	// Nothing to fix while maximized: there is no resize margin to hover,
+	// and isMaximized()/isMinimized() paths elsewhere in this class already
+	// treat this state specially (see paintEvent(), adjustTitleBar()).
+	if (isMaximized() || isMinimized())
+	{
+		return;
+	}
+
+	// Never touch the cursor mid-drag. During an active resize (or move),
+	// the pointer legitimately ends up far from the original edge while a
+	// mouse button stays held, and Qt keeps the resize cursor for the whole
+	// gesture on purpose -- clearing it here would fight that, not fix
+	// anything.
+	if (QGuiApplication::mouseButtons() != Qt::NoButton)
+	{
+		return;
+	}
+
+	// Only a resize cursor can be "stuck" in the sense this works around;
+	// leave anything else (including a cursor a child widget set on
+	// purpose) alone.
+	static const Qt::CursorShape resizeShapes[] = {
+		Qt::SizeVerCursor, Qt::SizeHorCursor, Qt::SizeFDiagCursor, Qt::SizeBDiagCursor
+	};
+	if (std::find(std::begin(resizeShapes), std::end(resizeShapes), cursor().shape())
+		== std::end(resizeShapes))
+	{
+		return;
+	}
+
+	// Qt's own QMdiSubWindow resize-cursor tracking only updates while mouse
+	// moves keep arriving for this window. A plugin editor embedded as a
+	// real native child HWND right beneath the title bar (see
+	// PrestigeView::openEditorWindow()'s WA_NativeWindow host widget) can
+	// take over input the moment the pointer crosses onto it, so Qt never
+	// sees the move that would have told it the pointer left the margin,
+	// and the resize cursor it set there freezes. An earlier fix tried to
+	// catch that transition with an event filter on the native child
+	// itself (QEvent::Enter -> unsetCursor()) but did not hold up in
+	// testing -- most likely because reliable event delivery for that kind
+	// of native, WA_PaintOnScreen child is exactly what is missing here, so
+	// no event hook on it can be trusted. This instead depends on no event
+	// from that native area at all: compare the real cursor position
+	// (QCursor::pos(), which reflects the OS's own idea of where the
+	// pointer is, regardless of which HWND is currently receiving input)
+	// against this window's own known frame width, and clear a resize
+	// cursor once the pointer is no longer near any edge.
+	const QPoint local = mapFromGlobal(QCursor::pos());
+	const int margin = std::max(frameWidth(), 1);
+	const bool nearEdge = local.x() <= margin || local.x() >= width() - margin
+		|| local.y() <= margin || local.y() >= height() - margin;
+
+	if (!nearEdge)
+	{
+		unsetCursor();
 	}
 }
 

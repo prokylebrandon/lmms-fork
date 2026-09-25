@@ -49,16 +49,28 @@ namespace lmms
  * into Vst::Event::sampleOffset so events land at the correct sample within
  * the current block, not collapsed to the start.
  *
- * No heap allocation after construction (events vector is pre-reserved).
+ * No heap allocation for the common case (events vector is pre-reserved to
+ * kReserveEvents). Past that, it grows like any std::vector rather than
+ * refusing new events: an earlier version capped the list at kMaxEvents and
+ * silently discarded anything past it, which drops real, distinct notes
+ * rather than merely costing an occasional reallocation. That cap turned
+ * out to be reachable in practice -- a Song Editor loop region shorter than
+ * one audio period causes Song::processNextBuffer() to walk the loop
+ * multiple times within a single period, and a run of periods where
+ * PrestigeInstrument::play() couldn't take m_pluginMutex (see its own
+ * comment) lets several periods' worth of already-queued notes land in one
+ * drain -- either of which can push a block's event count well past what
+ * kMaxEvents assumed was a safe ceiling. There is no upper bound the host
+ * can safely assume here, so there is no cap.
  */
 class Vst3EventList final : public Steinberg::Vst::IEventList
 {
 public:
-    static constexpr int kMaxEvents = 256;
+    static constexpr int kReserveEvents = 256; // sized for the common case; NOT a hard limit -- see class comment.
 
     Vst3EventList()
     {
-        m_events.reserve(kMaxEvents);
+        m_events.reserve(kReserveEvents);
     }
 
     void clear() { m_events.clear(); }
@@ -69,9 +81,6 @@ public:
      */
     void addMidiEvent(const MidiEvent& midiEvent, Steinberg::int32 sampleOffset)
     {
-        if (static_cast<int>(m_events.size()) >= kMaxEvents)
-            return;
-
         Steinberg::Vst::Event e{};
         e.busIndex     = 0;
         e.sampleOffset = sampleOffset;
@@ -178,8 +187,6 @@ public:
 
     Steinberg::tresult PLUGIN_API addEvent(Steinberg::Vst::Event& e) override
     {
-        if (static_cast<int>(m_events.size()) >= kMaxEvents)
-            return Steinberg::kResultFalse;
         m_events.push_back(e);
         return Steinberg::kResultOk;
     }
