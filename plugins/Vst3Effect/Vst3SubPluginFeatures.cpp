@@ -111,15 +111,18 @@ void Vst3SubPluginFeatures::listSubPluginKeys(const Plugin::Descriptor* desc, Ke
 		for (const Vst3ClassInfo& info : classes)
 		{
 			// ---------------------------------------------------------
-			// ASSUMPTION FLAG (batch 1, unverified against Vst3Types.h):
-			// info.isInstrument / info.uid / info.classIndex / info.name /
-			// info.vendor / info.category are inferred from
-			// Vst3PluginInstance.h's doc comments and prestige-vst3.md
-			// (which names classIndex and a UID concept explicitly), NOT
-			// read from the real Vst3ClassInfo definition -- Vst3Types.h
-			// was not available when this was written. Confirm the exact
-			// field names/types here before building; see the batch 2
-			// continuation prompt's file list.
+			// Task 0 (batch 2) resolution, verified against the real
+			// Vst3Types.h: info.isInstrument / info.classIndex / info.name /
+			// info.vendor / info.category were all guessed correctly in
+			// batch 1 and needed no changes. The one mismatch was the
+			// class UID field, which is named `cid` (QString), not `uid`
+			// -- fixed below. `cid` is already a plain string identifier,
+			// so no separate encoding/decoding step is needed to store it
+			// in this AttributeMap, or (later, task 4) in the save file's
+			// `classcid` attribute. The AttributeMap key itself is kept as
+			// "uid" here -- it's an internal map key, not tied to the
+			// struct's field name -- for consistency with
+			// Vst3Effect::openPlugin, which reads this same key.
 			// ---------------------------------------------------------
 			if (info.isInstrument)
 			{
@@ -128,7 +131,7 @@ void Vst3SubPluginFeatures::listSubPluginKeys(const Plugin::Descriptor* desc, Ke
 
 			EffectKey::AttributeMap am;
 			am["file"]     = bundlePath;
-			am["uid"]      = info.uid;                           // stable identity -- never the file path or class index alone
+			am["uid"]      = info.cid;                           // stable identity -- never the file path or class index alone
 			am["classidx"] = QString::number(info.classIndex);   // cached hint only; re-resolved by UID at load time (see Vst3Effect::openPlugin), never trusted positionally
 			am["vendor"]   = info.vendor;
 			am["category"] = info.category;

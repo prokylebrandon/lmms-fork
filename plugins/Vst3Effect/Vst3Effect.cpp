@@ -91,10 +91,15 @@ bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid)
 	int classIndex = -1;
 	for (const Vst3ClassInfo& info : classes)
 	{
-		// See Vst3SubPluginFeatures.cpp's ASSUMPTION FLAG comment: `uid`
-		// and `classIndex` field names here are inferred, not read from
-		// the real Vst3Types.h.
-		if (info.uid == uid)
+		// Task 0 (batch 2) resolution, verified against the real
+		// Vst3Types.h: the class UID field is named `cid` (QString),
+		// not `uid` as batch 1 assumed -- fixed below. classIndex/name/
+		// vendor/category/isInstrument were all guessed correctly in
+		// batch 1 and needed no changes. `cid` is already a plain
+		// QString, so no separate hex-encoding step is needed to carry
+		// it into this class's `uid` parameter or the AttributeMap
+		// below.
+		if (info.cid == uid)
 		{
 			classIndex = info.classIndex;
 			break;
