@@ -13,7 +13,7 @@ BUILD_PLUGIN(vst3effect
     EMBEDDED_RESOURCES logo.svg
 )
 
-target_link_libraries(vst3effect PRIVATE vst3base)
+target_link_libraries(vst3effect vst3base)
 target_include_directories(vst3effect PRIVATE
     "${CMAKE_SOURCE_DIR}/plugins/Vst3Base"
     "${CMAKE_SOURCE_DIR}/plugins/Vst3Base/vst3sdk"
