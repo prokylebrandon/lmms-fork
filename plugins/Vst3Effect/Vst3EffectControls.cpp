@@ -28,6 +28,8 @@
 #include <QDomElement>
 #include <QTextStream>
 
+#include "Engine.h"
+#include "Song.h"
 #include "Vst3Effect.h"
 #include "Vst3EffectControlDialog.h"
 #include "Vst3PluginInstance.h"
@@ -264,7 +266,7 @@ void Vst3EffectControls::applySavedElement(const QDomElement& element)
 			// Vst3Effect::openPlugin() left it in; say so rather than
 			// pretend.
 			qWarning("Vst3Effect: state restore failed for %s", qPrintable(plugin->name()));
-			m_effect->collectErrorForUI(QObject::tr("Plugin state could not be restored."));
+			Engine::getSong()->collectError(QObject::tr("Plugin state could not be restored."));
 		}
 	}
 
