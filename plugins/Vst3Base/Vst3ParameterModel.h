@@ -27,6 +27,7 @@
 
 #include <QString>
 
+#include "vst3base_export.h"
 #include "AutomatableModel.h"
 #include "Vst3Parameter.h"
 
@@ -94,7 +95,7 @@ class Vst3PluginInstance;
  * Main/GUI thread only, like the rest of Vst3PluginInstance's non-
  * processAudio() surface.
  */
-class Vst3ParameterModel : public Model
+class VST3BASE_EXPORT Vst3ParameterModel : public Model
 {
 	Q_OBJECT
 public:
