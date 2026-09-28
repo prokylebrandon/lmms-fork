@@ -100,6 +100,13 @@ target_include_directories(vst3base
 # The SDK uses C++17 <filesystem> on Linux
 target_compile_features(vst3base PRIVATE cxx_std_17)
 
+# MSVC: vst3base links lmms.lib, and both lmms.exe and vst3base end up
+# defining std::vector<float>'s constructor (identical inline code). Accept
+# the duplicate instead of failing with LNK2005/LNK1169.
+if(MSVC)
+    target_link_options(vst3base PRIVATE /FORCE:MULTIPLE)
+endif()
+
 # SDK silence: the SDK has internal warnings we can't fix
 target_compile_options(vst3base PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-w>
