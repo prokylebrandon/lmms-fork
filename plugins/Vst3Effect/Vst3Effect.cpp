@@ -65,6 +65,15 @@ Vst3Effect::Vst3Effect(Model* parent, const Descriptor::SubPluginFeatures::Key* 
 	m_controls(this)
 {
 	const bool loaded = openPlugin(m_key.attributes["file"], m_key.attributes["uid"]);
+	if (loaded)
+	{
+		// Task 2 (batch 2): build the per-parameter automatable models now
+		// that the plugin instance exists. Mirrors PrestigeInstrument's
+		// constructor -> instantiatePlugin() -> buildParameterModels()
+		// ordering, collapsed into one constructor since Vst3Effect
+		// (unlike Prestige) has no separate load-a-different-plugin path.
+		m_controls.buildParameterModels();
+	}
 	setDisplayName(m_key.name);
 	setDontRun(!loaded);
 }
@@ -148,8 +157,46 @@ void Vst3Effect::closePluginLocked()
 	QMutexLocker ml(&m_pluginMutex);
 	if (m_instance)
 	{
+		// Detach-then-destroy (Task 2, batch 2): the parameter models, and
+		// the plugin's edited-parameter callback pointing back at them,
+		// must be torn down before m_instance itself goes away -- mirrors
+		// PrestigeInstrument::closePluginLocked()'s ordering exactly (see
+		// Vst3EffectControls::teardownParameterModels()'s own comment).
+		m_controls.teardownParameterModels();
 		m_instance->stopProcessing();
 		m_instance.reset();
+	}
+}
+
+
+bool Vst3Effect::createEditor(int* width, int* height,
+	Vst3PluginInstance::EditorResizeCallback onResize, QString* error)
+{
+	if (!m_instance)
+	{
+		if (error) { *error = tr("No plugin loaded"); }
+		return false;
+	}
+	return m_instance->createEditor(width, height, std::move(onResize), error);
+}
+
+
+bool Vst3Effect::attachEditor(void* nativeParent, QString* error)
+{
+	if (!m_instance)
+	{
+		if (error) { *error = tr("No plugin loaded"); }
+		return false;
+	}
+	return m_instance->attachEditor(nativeParent, error);
+}
+
+
+void Vst3Effect::closeEditor()
+{
+	if (m_instance)
+	{
+		m_instance->closeEditor();
 	}
 }
 
@@ -176,7 +223,7 @@ Effect::ProcessStatus Vst3Effect::processImpl(SampleFrame* buf, const f_cnt_t fr
 	}
 
 	// LMMS's own wet/dry only -- see the class-level doc comment on the
-	// deferred plugin-own-mix-control decision.
+	// resolved plugin-own-mix-control decision (Task 2, batch 2).
 	const float w = wetLevel();
 	const float d = dryLevel();
 	for (f_cnt_t f = 0; f < frames; ++f)

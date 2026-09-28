@@ -25,9 +25,12 @@
 #ifndef LMMS_GUI_VST3_EFFECT_CONTROL_DIALOG_H
 #define LMMS_GUI_VST3_EFFECT_CONTROL_DIALOG_H
 
+#include <QPointer>
+
 #include "EffectControlDialog.h"
 
 class QLabel;
+class QPushButton;
 
 namespace lmms
 {
@@ -37,27 +40,61 @@ class Vst3EffectControls;
 namespace gui
 {
 
+// ASSUMPTION FLAG (Task 3, batch 2): forward-declared in the lmms::gui
+// namespace on the strength of every other GUI class seen so far living
+// there (EffectControlDialog, PluginView, etc.) -- SubWindow.h itself was
+// not attached this session, so this is inferred from usage, not
+// confirmed against its own header. If it actually lives in plain
+// lmms:: or the global namespace, this is a one-line fix, not a silent
+// behavioural risk.
+class SubWindow;
+
 /**
- * BATCH 1 SCOPE: confirms the plugin loaded and shows its identity. Does
- * NOT yet show per-parameter controls or a way to open the plugin's native
- * editor -- both need Vst3PluginInstance::createEditor()/attachEditor(),
- * hosted through a native-window-hosting widget. Prestige's instrument
- * side (Phase 2/3) almost certainly already built one of these; batch 2
- * should reuse it rather than duplicate it (see continuation prompt).
+ * Task 3 (batch 2) adds the native editor toggle. Per-parameter knob
+ * controls are still NOT shown here -- Task 2 built the parameter MODELS
+ * (Vst3EffectControls::parameterModels()), but neither Task 2 nor Task 3
+ * asked for a knob UI to interact with them, unlike Prestige's separate
+ * Vst3ParameterWindow on the instrument side. Flagged in the constructor's
+ * note label and the batch 2 handoff notes -- until that gap is closed,
+ * "automate at least one parameter" (the batch's acceptance criteria) may
+ * not be reachable purely through this dialog.
  *
- * Base class contract assumed here (EffectControlDialog.h was not
- * available when this was written): constructible from an EffectControls*,
- * itself a QWidget. Mirrors VstEffectControlDialog's constructor shape,
- * minus everything that file does that depends on VstPlugin-specific
- * embedding/preset machinery this class doesn't have yet.
+ * The editor-hosting mechanism (openEditorWindow()/closeEditorWindow(),
+ * the EditorCloseFilter/EditorHostCursorFilter helpers in the .cpp) is a
+ * deliberate duplicate of gui::PrestigeView's identical code, not a
+ * promotion into a shared location -- see the .cpp's anonymous namespace
+ * comment for why.
  */
 class Vst3EffectControlDialog : public EffectControlDialog
 {
+	Q_OBJECT
 public:
 	explicit Vst3EffectControlDialog(Vst3EffectControls* controls);
-	~Vst3EffectControlDialog() override = default;
+	~Vst3EffectControlDialog() override;
+
+private slots:
+	void toggleEditor();
 
 private:
+	//! userInitiated distinguishes an explicit button click (worth a
+	//! warning dialog on failure) from a silent background attempt --
+	//! mirrors gui::PrestigeView::openEditorWindow() exactly, minus the
+	//! UI-state restore-on-project-load path: Vst3Effect has no
+	//! equivalent of PrestigeInstrument's editorWanted()/
+	//! uiRestoreRequested() yet, since the Task 4 state scheme in the
+	//! continuation prompt has no <ui> node for the effect side (unlike
+	//! Prestige's). If Phase 5 wants "editor was open" to survive a
+	//! project reload for effects too, that is new scope, not something
+	//! silently assumed here.
+	void openEditorWindow(bool userInitiated);
+	void closeEditorWindow();
+
+	Vst3EffectControls* m_controls;
+
+	QPointer<QWidget> m_editorHost;
+	QPointer<SubWindow> m_editorWindow;
+	QPushButton* m_editorButton = nullptr;
+
 	QLabel* m_infoLabel;
 	QLabel* m_noteLabel;
 };

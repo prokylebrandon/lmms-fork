@@ -149,6 +149,7 @@ SetupDialog::SetupDialog(ConfigTab tab_to_open) :
 			"midi", "autoquantize", "0").toInt() != 0),
 	m_workingDir(QDir::toNativeSeparators(ConfigManager::inst()->workingDir())),
 	m_vstDir(QDir::toNativeSeparators(ConfigManager::inst()->vstDir())),
+	m_vst3Dir(QDir::toNativeSeparators(ConfigManager::inst()->vst3Dir())),
 	m_ladspaDir(QDir::toNativeSeparators(ConfigManager::inst()->ladspaDir())),
 	m_gigDir(QDir::toNativeSeparators(ConfigManager::inst()->gigDir())),
 	m_sf2Dir(QDir::toNativeSeparators(ConfigManager::inst()->sf2Dir())),
@@ -830,6 +831,10 @@ SetupDialog::SetupDialog(ConfigTab tab_to_open) :
 		SLOT(setVSTDir(const QString&)),
 		SLOT(openVSTDir()),
 		m_vstDirLineEdit);
+	addPathEntry(tr("VST3 plugins directory"), m_vst3Dir,
+		SLOT(setVST3Dir(const QString&)),
+		SLOT(openVST3Dir()),
+		m_vst3DirLineEdit);
 	addPathEntry(tr("LADSPA plugins directories"), m_ladspaDir,
 		SLOT(setLADSPADir(const QString&)),
 		SLOT(openLADSPADir()),
@@ -1026,6 +1031,7 @@ void SetupDialog::accept()
 
 	ConfigManager::inst()->setWorkingDir(QDir::fromNativeSeparators(m_workingDir));
 	ConfigManager::inst()->setVSTDir(QDir::fromNativeSeparators(m_vstDir));
+	ConfigManager::inst()->setVST3Dir(QDir::fromNativeSeparators(m_vst3Dir));
 	ConfigManager::inst()->setLADSPADir(QDir::fromNativeSeparators(m_ladspaDir));
 	ConfigManager::inst()->setSF2Dir(QDir::fromNativeSeparators(m_sf2Dir));
 #ifdef LMMS_HAVE_FLUIDSYNTH
@@ -1348,6 +1354,23 @@ void SetupDialog::openVSTDir()
 void SetupDialog::setVSTDir(const QString & vstDir)
 {
 	m_vstDir = vstDir;
+}
+
+
+void SetupDialog::openVST3Dir()
+{
+	QString new_dir = FileDialog::getExistingDirectory(this,
+		tr("Choose your VST3 plugins directory"), m_vst3Dir);
+	if (!new_dir.isEmpty())
+	{
+		m_vst3DirLineEdit->setText(new_dir);
+	}
+}
+
+
+void SetupDialog::setVST3Dir(const QString & vst3Dir)
+{
+	m_vst3Dir = vst3Dir;
 }
 
 

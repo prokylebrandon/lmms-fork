@@ -74,10 +74,17 @@ endif()
 # ---- vst3base shared library ----
 # Built as SHARED (matching vstbase) so future plugins (Prestige, Vst3Effect)
 # can link against it without duplicating SDK object code.
+#
+# Vst3ParameterModel.cpp (Task 2, batch 2): promoted here from
+# plugins/Prestige. It's a Model/AutomatableModel-based bridge, so it
+# needs a MOCFILES entry -- vst3base's other sources have no Q_OBJECT and
+# never needed one before this.
 BUILD_PLUGIN(vst3base
     Vst3PluginInstance.cpp
     Vst3PlugFrameIid.cpp
+    Vst3ParameterModel.cpp
     ${VST3SDK_SOURCES}
+    MOCFILES Vst3ParameterModel.h
     EXPORT_BASE_NAME vst3base
     LINK SHARED
 )

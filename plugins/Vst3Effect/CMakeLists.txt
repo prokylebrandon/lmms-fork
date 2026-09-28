@@ -21,8 +21,7 @@ target_include_directories(vst3effect PRIVATE
 
 # NOTE (batch 1, unverified): the MOCFILES line above lists every header in
 # this target defensively, mirroring prestige-vst3.md's Prestige example.
-# None of batch 1's headers actually declare their own Q_OBJECT (no new
-# signals/slots yet -- Effect/EffectControls/EffectControlDialog already
-# have Q_OBJECT further up their own hierarchies), so this may be trimmable
-# once BuildPlugin.cmake's actual MOC-file requirements are confirmed. Left
-# inclusive rather than guessing wrong in the other direction.
+# Vst3EffectControlDialog.h now genuinely needs its entry (Task 3, batch 2
+# added Q_OBJECT + a private slot to it); the other two remain defensive
+# and may be trimmable once BuildPlugin.cmake's actual MOC-file
+# requirements are confirmed.
