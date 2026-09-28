@@ -264,7 +264,7 @@ void Vst3EffectControls::applySavedElement(const QDomElement& element)
 			// Vst3Effect::openPlugin() left it in; say so rather than
 			// pretend.
 			qWarning("Vst3Effect: state restore failed for %s", qPrintable(plugin->name()));
-			collectErrorForUI(QObject::tr("Plugin state could not be restored."));
+			m_effect->collectErrorForUI(QObject::tr("Plugin state could not be restored."));
 		}
 	}
 
