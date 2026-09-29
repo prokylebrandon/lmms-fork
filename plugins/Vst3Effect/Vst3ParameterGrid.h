@@ -39,6 +39,7 @@ class QPushButton;
 
 namespace lmms
 {
+struct Vst3Parameter;
 class Vst3ParameterModel;
 }
 
