@@ -167,6 +167,22 @@ public:
 	 * matches by id() itself, since
 	 * parameters can be reordered or dropped by a plugin update between a
 	 * project's save and its later load.
+	 *
+	 * For an isProgramChange parameter, the saved numeric value is a
+	 * snapshot of whatever program/preset index was active in a *previous*
+	 * session -- it is not meaningful to re-apply on top of state that
+	 * restoreState()/restoreComponentState() (called by the owner just
+	 * before this) already restored from the plugin's own preset blob.
+	 * Applying it anyway would silently overwrite a freshly-loaded preset
+	 * with a stale program index and undo it with no warning (see
+	 * applySavedElement()'s ordering comment and doc/prestige-vst3.md /
+	 * PRESTIGE-Phase-4c's Task A). So this still restores the model's
+	 * automation clip / controller connection -- the only place those are
+	 * recorded at all -- but suppresses forwarding the resulting value to
+	 * the plugin, the same way setValueFromPlugin() suppresses the
+	 * opposite direction. An automation clip attached to a program-change
+	 * parameter still drives the plugin during playback as normal; only
+	 * the one-time "snap to last saved value" on project load is skipped.
 	 */
 	void loadSettings(const QDomElement& paramElement);
 

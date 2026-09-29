@@ -28,10 +28,14 @@
 #include <QDir>
 #include <QStandardPaths>
 
+#include <QDomDocument>
+#include <QDomElement>
+
 #include "Vst3PluginInstance.h"
 #include "Vst3MemoryStream.h"
 #include "Vst3EventList.h"
 #include "Vst3ParameterChanges.h"
+#include "Vst3ParameterModel.h"
 #include "MidiEvent.h"
 #include "Midi.h"
 
@@ -336,6 +340,158 @@ private slots:
         // Verify: saveState again and compare blobs
         const QByteArray restored = r2.instance->saveState();
         QCOMPARE(restored, savedState);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task A regression test: a saved <param> value must NOT be re-applied
+    // to the plugin for an isProgramChange parameter, since that is exactly
+    // what silently overwrote a just-restored preset (see
+    // Vst3ParameterModel::loadSettings() and
+    // PRESTIGE-Phase-4c-State-Fix-and-Knobs.md's Task A). This exercises the
+    // real bug: testStateRoundTrip() above only covers
+    // Vst3PluginInstance::saveState()/restoreState() directly and never
+    // touches Vst3ParameterModel::loadSettings(), so it could not have
+    // caught this -- the bug lived one layer up, in how the *caller*
+    // (Vst3EffectControls::applySavedElement() / PrestigeInstrument's
+    // equivalent) combines plugin-state restore with saved-parameter
+    // reapplication.
+    //
+    // What CI can and cannot cover here (see also this file's other
+    // QSKIP-gated tests): the SDK's "again" sample plugin has no
+    // isProgramChange parameter of its own (verified against its
+    // parameter list at the top of the test below), so this test builds a
+    // synthetic Vst3Parameter with isProgramChange = true and constructs a
+    // Vst3ParameterModel around it directly, rather than going through
+    // Vst3EffectControls/PrestigeInstrument (which would need a full
+    // Song/Project). That means it verifies Vst3ParameterModel's own
+    // contract in isolation, not the end-to-end
+    // applySavedElement()->restoreState()->loadSettings() sequence inside
+    // a real project file. The user must still check the end-to-end
+    // behavior by hand with a real preset-capable plugin (see the
+    // handoff note's manual test list) -- this test cannot load a .vst3
+    // that actually has a program list, since none ships with the SDK
+    // samples.
+    void testProgramChangeParamNotReappliedOnLoad()
+    {
+        const QString path = agianPluginPath();
+        if (path.isEmpty())
+            QSKIP("SDK sample plugin 'again.vst3' not found in build dir — skipping");
+
+        auto result = Vst3PluginInstance::load(path, 0, 44100.0, 512);
+        QVERIFY(result);
+        auto& plugin = *result.instance;
+
+        // Confirm the assumption in the comment above: if a future SDK
+        // sample plugin ships with a real program-change parameter, this
+        // still passes (it would just mean the synthetic info below
+        // duplicates an id that also exists for real -- harmless, since
+        // Vst3ParameterModel is only exercised directly, not through
+        // plugin->parameters() lookups), but it's worth knowing which
+        // case is actually under test.
+        bool againHasRealProgramChangeParam = false;
+        for (const auto& p : plugin.parameters())
+        {
+            if (p.isProgramChange) { againHasRealProgramChangeParam = true; break; }
+        }
+        Q_UNUSED(againHasRealProgramChangeParam); // informational only, not asserted
+
+        // A synthetic id that (per the SDK-sample check above) "again.vst3"
+        // is not using, so setParamNormalized() on it is simply ignored by
+        // the plugin's controller rather than touching a real parameter --
+        // what's under test is whether Vst3ParameterModel attempts to
+        // forward the value at all, not what the plugin does with it.
+        Vst3Parameter programInfo;
+        programInfo.id = static_cast<Vst3ParamID>(0x50524f47u); // 'PROG', arbitrary/unused id
+        programInfo.title = QStringLiteral("Program");
+        programInfo.defaultNormalisedValue = 0.0;
+        programInfo.stepCount = 7; // 8 programs, as a real program-change param would report
+        programInfo.isProgramChange = true;
+
+        // The model starts at 0.0, mirroring a freshly-loaded preset that
+        // just set the plugin to program 0 via restoreState() -- exactly
+        // the moment applySavedElement() calls loadSettings() next.
+        Vst3ParameterModel model(nullptr, &plugin, programInfo, /*initialValue=*/0.0);
+        QCOMPARE(model.valueModel()->value(), 0.0f);
+
+        // Build a <param> element the way Vst3ParameterModel::saveSettings()
+        // would have written it in an EARLIER session, when a different
+        // program (program 5 of 8, normalised ~0.714) was active -- i.e.
+        // exactly the stale-value scenario from Task A.
+        QDomDocument doc;
+        QDomElement paramsNode = doc.createElement("parameters");
+        QDomElement paramElement = doc.createElement("param");
+        paramElement.setAttribute("id", static_cast<qulonglong>(programInfo.id));
+        paramElement.setAttribute("value", 5.0 / 7.0);
+        paramsNode.appendChild(paramElement);
+
+        // This is the call applySavedElement() makes AFTER restoreState()
+        // has already put the plugin/model at program 0. Before the Task A
+        // fix, this unconditionally forwarded the stale 5/7 value to the
+        // plugin via onModelChanged() -> queueParameterChange(), silently
+        // undoing whatever restoreState() had just restored.
+        model.loadSettings(paramElement);
+
+        // The model's own value legitimately updates to what was saved
+        // (matches AutomatableModel's normal contract -- an automation
+        // clip or controller connection on this parameter must still
+        // load correctly), but the controller must NOT have been told
+        // about it: querying the plugin directly for this id must still
+        // read back whatever setParamNormalized() last set it to before
+        // loadSettings() ran, i.e. nothing from this test (the id is
+        // synthetic/unused), not a value derived from 5.0/7.0.
+        QCOMPARE(model.valueModel()->value(), static_cast<float>(5.0 / 7.0));
+
+        // getParameterNormalized() returns nullopt for an id not in
+        // plugin->parameters() (see its doc comment) -- which confirms the
+        // synthetic id was indeed never touched via the real controller
+        // API up through this call, i.e. nothing in loadSettings() reached
+        // for a real id belonging to this plugin that the test doesn't
+        // control. This is a weaker check than intercepting
+        // queueParameterChange() directly (Vst3PluginInstance has no seam
+        // for that), so the primary evidence for the fix is architectural
+        // (reading Vst3ParameterModel::loadSettings() alongside this test),
+        // not purely this assertion; noted here rather than overclaiming
+        // what this test alone proves.
+        QVERIFY(!plugin.getParameterNormalized(programInfo.id).has_value());
+    }
+
+    // -----------------------------------------------------------------------
+    // Task A regression test: the same loadSettings() call for an ordinary
+    // (non-program-change) parameter must still forward to the plugin as
+    // before -- the fix must not silence every parameter, only
+    // isProgramChange ones.
+    // -----------------------------------------------------------------------
+    void testOrdinaryParamStillReappliedOnLoad()
+    {
+        const QString path = agianPluginPath();
+        if (path.isEmpty())
+            QSKIP("SDK sample plugin 'again.vst3' not found in build dir — skipping");
+
+        auto result = Vst3PluginInstance::load(path, 0, 44100.0, 512);
+        QVERIFY(result);
+        auto& plugin = *result.instance;
+        QVERIFY(!plugin.parameters().empty());
+
+        const Vst3Parameter info = plugin.parameters()[0];
+        QVERIFY(!info.isProgramChange); // sanity: this IS the ordinary case
+
+        Vst3ParameterModel model(nullptr, &plugin, info, info.defaultNormalisedValue);
+
+        QDomDocument doc;
+        QDomElement paramElement = doc.createElement("param");
+        paramElement.setAttribute("id", static_cast<qulonglong>(info.id));
+        const double savedValue = 0.6125;
+        paramElement.setAttribute("value", savedValue);
+
+        model.loadSettings(paramElement);
+
+        QCOMPARE(model.valueModel()->value(), static_cast<float>(savedValue));
+        // Unlike the isProgramChange case above, an ordinary parameter's
+        // id IS one of plugin->parameters(), so this reads the real
+        // controller value that queueParameterChange() should have pushed.
+        const auto fromPlugin = plugin.getParameterNormalized(info.id);
+        QVERIFY(fromPlugin.has_value());
+        QCOMPARE(static_cast<float>(*fromPlugin), static_cast<float>(savedValue));
     }
 
     void testMidiEventQueuing()

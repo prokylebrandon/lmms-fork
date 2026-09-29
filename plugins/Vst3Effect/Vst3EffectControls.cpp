@@ -74,6 +74,12 @@ void Vst3EffectControls::buildParameterModels()
 
 void Vst3EffectControls::teardownParameterModels()
 {
+	// See this method's doc comment in the header: emitted first, before
+	// anything below detaches or destroys a model, so a still-open
+	// Vst3EffectControlDialog's Vst3ParameterGrid can drop every Knob's
+	// model pointer while the models are still valid to unbind from.
+	emit parameterModelsAboutToClear();
+
 	Vst3PluginInstance* plugin = m_effect->pluginInstance();
 	if (plugin)
 	{

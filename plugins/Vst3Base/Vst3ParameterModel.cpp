@@ -119,7 +119,39 @@ void Vst3ParameterModel::saveSettings(QDomDocument& doc, QDomElement& parameters
 
 void Vst3ParameterModel::loadSettings(const QDomElement& paramElement)
 {
-	m_valueModel.loadSettings(paramElement, "value");
+	// AutomatableModel::loadSettings() always ends by calling setValue()
+	// on the saved (or automation-clip-derived) value -- there is no
+	// finer-grained API to load just the automation-clip/controller-
+	// connection metadata without also snapping the value. For a normal
+	// parameter that's exactly right: it's how a saved value survives a
+	// reload at all. For isProgramChange it is wrong: applySavedElement()/
+	// PrestigeInstrument::applySavedElement() already called
+	// restoreState()/restoreComponentState() on the plugin's own state
+	// blob just before this runs (see the header's doc comment and Task A
+	// of PRESTIGE-Phase-4c-State-Fix-and-Knobs.md), and that blob is the
+	// plugin's authoritative record of which program/preset is loaded.
+	// Re-applying a stale saved program index on top of it would silently
+	// undo the just-restored preset with no warning -- this was the root
+	// cause of "presets don't survive a project reload" for both hosts.
+	//
+	// m_settingFromPlugin already exists for the opposite direction
+	// (plugin editor -> host must not re-enter the plugin); reusing it
+	// here suppresses onModelChanged()'s forward-to-plugin the same way,
+	// while still letting setValue() run so the model's automation clip
+	// and controller connection are restored like any other parameter.
+	// An automation clip on a program-change parameter still drives the
+	// plugin normally during playback -- only this one-time load-time
+	// snap is skipped.
+	if (m_info.isProgramChange)
+	{
+		m_settingFromPlugin = true;
+		m_valueModel.loadSettings(paramElement, "value");
+		m_settingFromPlugin = false;
+	}
+	else
+	{
+		m_valueModel.loadSettings(paramElement, "value");
+	}
 
 	// NOT independently verified: whether the owner's loadSettings() is
 	// guaranteed to run before the rest of the project's AutomationClips

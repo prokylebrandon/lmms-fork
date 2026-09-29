@@ -24,6 +24,8 @@
 
 #include "Vst3EffectControlDialog.h"
 
+#include <vector>
+
 #include <QEvent>
 #include <QLabel>
 #include <QMessageBox>
@@ -35,6 +37,7 @@
 #include "SubWindow.h"
 #include "Vst3Effect.h"
 #include "Vst3EffectControls.h"
+#include "Vst3ParameterGrid.h"
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -155,18 +158,47 @@ Vst3EffectControlDialog::Vst3EffectControlDialog(Vst3EffectControls* controls) :
 	connect(m_editorButton, &QPushButton::clicked, this, &Vst3EffectControlDialog::toggleEditor);
 	layout->addWidget(m_editorButton);
 
-	// Unlike Prestige, Vst3Effect never replaces its plugin in place, so
-	// "loaded" above is fixed for this dialog's whole lifetime -- no
-	// updateLabels()-style refresh-on-signal is needed here.
-	m_noteLabel = new QLabel(
-		tr("Per-parameter automation models exist for this plugin, but no "
-		   "knob controls are shown here yet to interact with them "
-		   "directly -- see the batch 2 handoff notes."),
-		this);
-	m_noteLabel->setWordWrap(true);
-	layout->addWidget(m_noteLabel);
+	// Task B: the per-parameter knob grid, populated once from the
+	// models Vst3EffectControls::buildParameterModels() already built.
+	// Unlike Prestige's Vst3ParameterWindow (which is shown/hidden as a
+	// separate window across a plugin that can be replaced in place),
+	// this dialog and its plugin are 1:1 for the dialog's whole lifetime
+	// (see Vst3EffectControls.h's ownership comment), so the grid is
+	// filled once here rather than through a setParameters()/
+	// parameterModelsChanged() signal pair reacting to a later plugin
+	// swap that can't happen for Vst3Effect.
+	m_grid = new Vst3ParameterGrid(this);
+	layout->addWidget(m_grid, 1);
 
-	layout->addStretch();
+	if (loaded)
+	{
+		std::vector<Vst3ParameterModel*> models;
+		models.reserve(m_controls->parameterModels().size());
+		for (const auto& model : m_controls->parameterModels())
+		{
+			models.push_back(model.get());
+		}
+		m_grid->setParameters(models, QString());
+	}
+	else
+	{
+		m_grid->setParameters({}, tr("VST3 effect failed to load; no parameters available."));
+	}
+
+	// See Vst3EffectControls.h's parameterModelsAboutToClear() doc
+	// comment: this is the connection that makes the signal actually
+	// protect a dialog that is open at teardown time. Queued would risk
+	// the grid clearing itself after the models it's about to touch are
+	// already gone (teardownParameterModels() runs synchronously right
+	// before destroying them), so this is a direct (default,
+	// same-thread) connection deliberately, not queued.
+	if (m_controls)
+	{
+		connect(m_controls, &Vst3EffectControls::parameterModelsAboutToClear,
+			this, [this]() { m_grid->clearParameters(tr("VST3 effect failed to load; no parameters available.")); });
+	}
+
+	resize(560, 480);
 }
 
 

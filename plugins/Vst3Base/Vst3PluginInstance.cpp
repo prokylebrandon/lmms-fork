@@ -1390,7 +1390,23 @@ QByteArray Vst3PluginInstance::saveState() const
 
     // Format: [4 bytes compLen][comp bytes][4 bytes ctrlLen][ctrl bytes]
     Vst3MemoryStream compStream;
-    comp->getState(&compStream);
+    const Steinberg::tresult compGetResult = comp->getState(&compStream);
+    if (compGetResult != Steinberg::kResultOk)
+    {
+        // Diagnostics for Task A (PRESTIGE-Phase-4c-State-Fix-and-Knobs.md):
+        // getState() failing here was previously silent -- saveState()
+        // went on to write whatever partial/empty bytes ended up in
+        // compStream into the project as if it had succeeded, so a later
+        // restoreState() call would legitimately fail against a genuinely
+        // bad blob with no record of why. Not a confirmed cause of the
+        // reported symptom (inference only -- no plugin in this session
+        // has been observed to fail getState()), but silently swallowing
+        // a real SDK failure here made it uninvestigable, so it is now
+        // logged and stops the save rather than proceeding.
+        qWarning("Vst3PluginInstance: IComponent::getState failed for '%s' (tresult=%d)",
+                 qPrintable(m_name), static_cast<int>(compGetResult));
+        return {};
+    }
 
     QByteArray ctrlBytes;
     if (m_controller)
@@ -1410,7 +1426,13 @@ QByteArray Vst3PluginInstance::saveState() const
         if (!sameObj)
         {
             Vst3MemoryStream ctrlStream;
-            ctrl->getState(&ctrlStream);
+            const Steinberg::tresult ctrlGetResult = ctrl->getState(&ctrlStream);
+            if (ctrlGetResult != Steinberg::kResultOk)
+            {
+                qWarning("Vst3PluginInstance: IEditController::getState failed for '%s' (tresult=%d)",
+                         qPrintable(m_name), static_cast<int>(ctrlGetResult));
+                return {};
+            }
             ctrlBytes = ctrlStream.buffer();
         }
     }
@@ -1440,29 +1462,103 @@ bool Vst3PluginInstance::restoreState(const QByteArray& data)
     uint32_t compLen = 0, ctrlLen = 0;
     std::memcpy(&compLen, d, 4); d += 4;
 
-    if (static_cast<int>(compLen) > data.size() - 8) return false;
+    // Compare as a common 64-bit unsigned type rather than casting compLen
+    // down to (signed) int first. The previous
+    // "static_cast<int>(compLen) > data.size() - 8" truncated compLen to
+    // 32 bits *before* comparing: a compLen at or above 2^31 (impossible
+    // for any real preset, but reachable from corrupted/foreign data)
+    // reinterprets as negative and can pass a bounds check it should
+    // fail, reading past the buffer in the memcpy below. Widening both
+    // sides to uint64_t before comparing removes the wraparound instead
+    // of relying on realistic preset sizes staying under the danger
+    // threshold. This was found during Task A's review of
+    // PRESTIGE-Phase-4c-State-Fix-and-Knobs.md; not confirmed as the
+    // cause of the reported "state could not be restored" message (a
+    // normal preset's compLen is nowhere near 2^31), but it is a real
+    // out-of-bounds read for malformed input and is fixed alongside the
+    // root cause in Vst3ParameterModel::loadSettings().
+    const auto availableAfterHeader = static_cast<std::uint64_t>(data.size()) - 8u;
+    if (static_cast<std::uint64_t>(compLen) > availableAfterHeader)
+    {
+        qWarning("Vst3PluginInstance: restoreState for '%s' rejected -- component length %u "
+                 "exceeds available %llu bytes", qPrintable(m_name), compLen,
+                 static_cast<unsigned long long>(availableAfterHeader));
+        return false;
+    }
 
     QByteArray compBytes(d, static_cast<int>(compLen)); d += compLen;
+
+    // ctrlLen is read from immediately after the component bytes; make
+    // sure that 4-byte length field itself is actually present before
+    // reading it, and that the ctrl bytes it claims are present too --
+    // the pre-fix code trusted both unconditionally.
+    const auto availableAfterComp = availableAfterHeader - compLen;
+    if (availableAfterComp < 4u)
+    {
+        qWarning("Vst3PluginInstance: restoreState for '%s' rejected -- missing controller length field",
+                 qPrintable(m_name));
+        return false;
+    }
     std::memcpy(&ctrlLen, d, 4); d += 4;
+    const auto availableForCtrl = availableAfterComp - 4u;
+    if (static_cast<std::uint64_t>(ctrlLen) > availableForCtrl)
+    {
+        qWarning("Vst3PluginInstance: restoreState for '%s' rejected -- controller length %u "
+                 "exceeds available %llu bytes", qPrintable(m_name), ctrlLen,
+                 static_cast<unsigned long long>(availableForCtrl));
+        return false;
+    }
     QByteArray ctrlBytes(d, static_cast<int>(ctrlLen));
 
     auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
 
     Vst3MemoryStream compStream(compBytes);
-    if (comp->setState(&compStream) != Steinberg::kResultOk)
+    const Steinberg::tresult compSetResult = comp->setState(&compStream);
+    if (compSetResult != Steinberg::kResultOk)
+    {
+        qWarning("Vst3PluginInstance: IComponent::setState failed for '%s' (tresult=%d, "
+                 "compLen=%u, ctrlLen=%u, hasSeparateControllerState=%d)",
+                 qPrintable(m_name), static_cast<int>(compSetResult), compLen, ctrlLen,
+                 hasSeparateControllerState() ? 1 : 0);
         return false;
+    }
 
     // Sync controller with new component state
     if (m_controller)
     {
         auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
         Vst3MemoryStream syncStream(compBytes);
-        ctrl->setComponentState(&syncStream);
+        const Steinberg::tresult syncResult = ctrl->setComponentState(&syncStream);
+        if (syncResult != Steinberg::kResultOk && syncResult != Steinberg::kNotImplemented)
+        {
+            // Logged, not fatal: IEditController::setComponentState is
+            // documented as optional (kNotImplemented is a legitimate
+            // answer for a plugin whose controller doesn't need syncing
+            // from component state), and the component state above
+            // already applied successfully, so a non-OK/non-
+            // kNotImplemented result here is downgraded to a diagnostic
+            // rather than failing the whole restore -- per hypothesis 2
+            // in Task A, treating every non-OK optional-call result as a
+            // hard failure was itself a candidate root cause. This is
+            // NOT the confirmed root cause (the confirmed one is in
+            // Vst3ParameterModel::loadSettings()); logged here so it can
+            // be ruled in or out against a real plugin if presets still
+            // misbehave after that fix.
+            qWarning("Vst3PluginInstance: IEditController::setComponentState returned "
+                     "tresult=%d for '%s' (component state already applied; continuing)",
+                     static_cast<int>(syncResult), qPrintable(m_name));
+        }
 
         if (ctrlLen > 0)
         {
             Vst3MemoryStream ctrlStream(ctrlBytes);
-            ctrl->setState(&ctrlStream);
+            const Steinberg::tresult ctrlSetResult = ctrl->setState(&ctrlStream);
+            if (ctrlSetResult != Steinberg::kResultOk)
+            {
+                qWarning("Vst3PluginInstance: IEditController::setState returned tresult=%d "
+                         "for '%s' (component state already applied; continuing)",
+                         static_cast<int>(ctrlSetResult), qPrintable(m_name));
+            }
         }
     }
 
@@ -1518,8 +1614,14 @@ bool Vst3PluginInstance::restoreComponentState(const QByteArray& data)
 
     auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
     Vst3MemoryStream compStream(data);
-    if (comp->setState(&compStream) != Steinberg::kResultOk)
+    const Steinberg::tresult compSetResult = comp->setState(&compStream);
+    if (compSetResult != Steinberg::kResultOk)
+    {
+        qWarning("Vst3PluginInstance: IComponent::setState (separate-format restore) failed "
+                 "for '%s' (tresult=%d, dataLen=%d)",
+                 qPrintable(m_name), static_cast<int>(compSetResult), data.size());
         return false;
+    }
 
     // Sync controller with the just-restored component state, same as
     // restoreState() already does for the combined-blob path above.
@@ -1527,7 +1629,15 @@ bool Vst3PluginInstance::restoreComponentState(const QByteArray& data)
     {
         auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
         Vst3MemoryStream syncStream(data);
-        ctrl->setComponentState(&syncStream);
+        const Steinberg::tresult syncResult = ctrl->setComponentState(&syncStream);
+        if (syncResult != Steinberg::kResultOk && syncResult != Steinberg::kNotImplemented)
+        {
+            // See the matching comment in restoreState(): optional call,
+            // logged rather than treated as a hard failure.
+            qWarning("Vst3PluginInstance: IEditController::setComponentState returned "
+                     "tresult=%d for '%s' (component state already applied; continuing)",
+                     static_cast<int>(syncResult), qPrintable(m_name));
+        }
     }
     return true;
 }
@@ -1538,7 +1648,15 @@ bool Vst3PluginInstance::restoreControllerState(const QByteArray& data)
 
     auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
     Vst3MemoryStream stream(data);
-    return ctrl->setState(&stream) == Steinberg::kResultOk;
+    const Steinberg::tresult result = ctrl->setState(&stream);
+    if (result != Steinberg::kResultOk)
+    {
+        qWarning("Vst3PluginInstance: IEditController::setState (separate-format restore) "
+                 "failed for '%s' (tresult=%d, dataLen=%d)",
+                 qPrintable(m_name), static_cast<int>(result), data.size());
+        return false;
+    }
+    return true;
 }
 
 } // namespace lmms

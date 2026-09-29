@@ -36,6 +36,7 @@ namespace lmms
 {
 
 class Vst3EffectControls;
+class Vst3ParameterModel;
 
 namespace gui
 {
@@ -48,22 +49,26 @@ namespace gui
 // lmms:: or the global namespace, this is a one-line fix, not a silent
 // behavioural risk.
 class SubWindow;
+class Vst3ParameterGrid;
 
 /**
- * Task 3 (batch 2) adds the native editor toggle. Per-parameter knob
- * controls are still NOT shown here -- Task 2 built the parameter MODELS
- * (Vst3EffectControls::parameterModels()), but neither Task 2 nor Task 3
- * asked for a knob UI to interact with them, unlike Prestige's separate
- * Vst3ParameterWindow on the instrument side. Flagged in the constructor's
- * note label and the batch 2 handoff notes -- until that gap is closed,
- * "automate at least one parameter" (the batch's acceptance criteria) may
- * not be reachable purely through this dialog.
+ * PRESTIGE-Phase-4c, Task B: the per-parameter knob grid
+ * (Vst3ParameterGrid, see its own header) is now built here and kept in
+ * sync with Vst3EffectControls::parameterModels(), closing the gap batch
+ * 2's note label used to describe ("Per-parameter automation models exist
+ * ... but no knob controls are shown here yet"). onPluginParameterEdited()
+ * -> setValueFromPlugin()'s existing feedback-loop guard
+ * (Vst3ParameterModel::m_settingFromPlugin) is untouched -- the grid only
+ * ever reads models the same way any other AutomatableModelView-based
+ * widget would, via Knob::setModel(), so it needs no new synchronization
+ * path of its own (Task B requirement 5).
  *
  * The editor-hosting mechanism (openEditorWindow()/closeEditorWindow(),
  * the EditorCloseFilter/EditorHostCursorFilter helpers in the .cpp) is a
  * deliberate duplicate of gui::PrestigeView's identical code, not a
  * promotion into a shared location -- see the .cpp's anonymous namespace
- * comment for why.
+ * comment for why. Task B requirement 7 keeps this toggle and its
+ * behavior unchanged; the grid is added alongside it, not instead of it.
  */
 class Vst3EffectControlDialog : public EffectControlDialog
 {
@@ -96,7 +101,27 @@ private:
 	QPushButton* m_editorButton = nullptr;
 
 	QLabel* m_infoLabel;
-	QLabel* m_noteLabel;
+
+	//! Task B: the scrollable per-parameter knob grid. Populated from
+	//! m_controls->parameterModels() once, in the constructor -- like
+	//! Vst3EffectControls itself (see its header's ownership comment),
+	//! this dialog's plugin is fixed for its whole lifetime, so unlike
+	//! Prestige's Vst3ParameterWindow there is no later
+	//! setParameters()/clearParameters() call needed for a plugin swap
+	//! that can never happen here.
+	//!
+	//! It IS cleared once more, though: this dialog's lifetime is
+	//! independent of Vst3EffectControls'/Vst3Effect's (createView()
+	//! hands ownership to EffectView, a separate GUI object -- see
+	//! EffectView.cpp -- not tied to the Effect's own destruction), so if
+	//! the effect is removed from the chain while this dialog is still
+	//! open, Vst3EffectControls::teardownParameterModels() can run before
+	//! this dialog is destroyed. Left unguarded, every Knob in m_grid
+	//! would be pointing at a freed Vst3ParameterModel/FloatModel. See
+	//! Vst3EffectControls::parameterModelsAboutToClear() and this file's
+	//! constructor for the signal connection that calls
+	//! m_grid->clearParameters() before that teardown proceeds.
+	Vst3ParameterGrid* m_grid = nullptr;
 };
 
 } // namespace gui

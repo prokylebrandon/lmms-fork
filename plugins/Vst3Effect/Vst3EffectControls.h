@@ -74,6 +74,7 @@ namespace gui { class Vst3EffectControlDialog; }
  */
 class Vst3EffectControls : public EffectControls
 {
+	Q_OBJECT
 public:
 	explicit Vst3EffectControls(Vst3Effect* effect);
 	~Vst3EffectControls() override = default;
@@ -103,6 +104,30 @@ public:
 	//! able to reach a model (via its edited-parameter callback) before
 	//! either side is torn down -- mirrors PrestigeInstrument::
 	//! teardownParameterModels()'s ordering exactly.
+	//!
+	//! PRESTIGE-Phase-4c Task B: also emits parameterModelsAboutToClear()
+	//! FIRST, before any model is detached or destroyed, so
+	//! Vst3ParameterGrid (owned by whatever Vst3EffectControlDialog this
+	//! effect's createView() produced, if that dialog still exists -- its
+	//! lifetime is independent of this object's, unlike
+	//! PrestigeInstrument's 1:1 relationship with its own window) can
+	//! clear every Knob it built before the FloatModel each one points at
+	//! goes away. Without this, a dialog left open while its effect is
+	//! removed from the chain would leave live Knob widgets pointing at
+	//! freed Vst3ParameterModel/FloatModel objects -- the same hazard
+	//! Vst3ParameterWindow::clearParameters()'s documented ordering
+	//! requirement exists to prevent on the Prestige side, here wired
+	//! through a signal instead of a direct call because, unlike
+	//! PrestigeInstrument, Vst3EffectControls does not hold a pointer
+	//! back to its dialog (createView() hands ownership to the caller --
+	//! see EffectView.cpp -- and nothing currently threads a reference
+	//! back). NOT independently exercised against the actual
+	//! effect-removed-while-dialog-open sequence in this session (that
+	//! would need EffectChain/EffectChainView, not part of the uploaded
+	//! files) -- the connection is made in
+	//! Vst3EffectControlDialog's constructor, so it only protects a
+	//! dialog that was actually open (i.e. already connected) at the
+	//! moment of teardown; flagged as a manual test in the handoff note.
 	void teardownParameterModels();
 
 private:
@@ -137,6 +162,11 @@ private:
 	//! kept only when the plugin is (or becomes) unavailable. Empty
 	//! otherwise.
 	QString m_retainedXml;
+
+signals:
+	//! See teardownParameterModels()'s doc comment. Emitted before any
+	//! model is detached or destroyed.
+	void parameterModelsAboutToClear();
 };
 
 } // namespace lmms
