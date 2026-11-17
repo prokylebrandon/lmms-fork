@@ -54,9 +54,10 @@ namespace Steinberg
         struct ProcessContext;
         struct BusInfo;
     }
-}
+} // namespace Steinberg
 
 #include "MidiEvent.h"
+#include "vst3base_export.h"
 
 namespace lmms
 {
@@ -120,8 +121,6 @@ class SampleFrame;
  *           kIsHidden flag) alongside the existing isReadOnly/isBypass/
  *           isProgramChange/isAutomatable flags.
  */
-#include "vst3base_export.h"
-
 class VST3BASE_EXPORT Vst3PluginInstance
 {
 public:
