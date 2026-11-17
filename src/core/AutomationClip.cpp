@@ -87,6 +87,7 @@ AutomationClip::AutomationClip( const AutomationClip & _clip_to_copy ) :
 
 bool AutomationClip::addObject( AutomatableModel * _obj, bool _search_dup )
 {
+	assert(_obj != nullptr);
 	QMutexLocker m(&m_clipMutex);
 
 	if (_search_dup && std::find(m_objects.begin(), m_objects.end(), _obj) != m_objects.end())
@@ -1060,11 +1061,14 @@ void AutomationClip::objectDestroyed( jo_id_t _id )
 
 	for (auto objIt = m_objects.begin(); objIt != m_objects.end(); objIt++)
 	{
-		Q_ASSERT( !(*objIt).isNull() );
-		if( (*objIt)->id() == _id )
+		auto objPtr = *objIt;
+		Q_ASSERT(!objPtr.isNull());
+		if (objPtr->id() == _id)
 		{
 			//Assign to objIt so that this loop work even break; is removed.
 			objIt = m_objects.erase( objIt );
+
+			Engine::getSong()->removeOldAutomatedValue(objPtr);
 			break;
 		}
 	}
