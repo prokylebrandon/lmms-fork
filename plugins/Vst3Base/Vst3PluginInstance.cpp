@@ -42,7 +42,9 @@
 #include <pluginterfaces/vst/ivstprocesscontext.h>
 #include <pluginterfaces/base/funknownimpl.h>
 
+#include <QCoreApplication>
 #include <QDebug>
+#include <QThread>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -300,9 +302,10 @@ public:
 
     Steinberg::tresult PLUGIN_API restartComponent(Steinberg::int32 flags) override
     {
-        // TODO(Phase 3): handle kParamValuesChanged / kReloadComponent / kIoChanged.
-        qDebug("Vst3PluginInstance: restartComponent(flags=0x%x) requested but not handled yet",
-               static_cast<unsigned>(flags));
+        if (auto* owner = m_owner.load())
+        {
+            owner->onRestartRequested(static_cast<int>(flags));
+        }
         return Steinberg::kResultOk;
     }
 
@@ -1202,6 +1205,48 @@ void Vst3PluginInstance::queueParameterChange(Vst3ParamID id, double normalisedV
 void Vst3PluginInstance::setParameterEditedCallback(ParameterEditedCallback cb)
 {
     m_paramEditedCb = std::move(cb);
+}
+
+void Vst3PluginInstance::setParametersChangedCallback(ParametersChangedCallback cb)
+{
+    m_paramsChangedCb = std::move(cb);
+}
+
+void Vst3PluginInstance::onRestartRequested(int flags)
+{
+    if (flags & Steinberg::Vst::kParamValuesChanged)
+    {
+        // The plugin changed parameter values itself (typically: it just
+        // loaded one of its own presets) without a performEdit() per
+        // parameter, so every host-side mirror of those values is now stale
+        // until it re-reads the controller.
+        //
+        // The VST3 spec puts restartComponent() on the UI thread. If a
+        // plugin calls it from elsewhere, do NOT run the callback there: it
+        // touches GUI-thread models. Dropping the notification is safe
+        // because the owners also re-read the controller when saving.
+        const QCoreApplication* app = QCoreApplication::instance();
+        if (app && QThread::currentThread() != app->thread())
+        {
+            qWarning("Vst3PluginInstance: '%s' reported kParamValuesChanged from a non-GUI thread; "
+                     "ignoring (parameter values are re-read when the project is saved)",
+                     qPrintable(m_name));
+        }
+        else if (m_paramsChangedCb)
+        {
+            m_paramsChangedCb();
+        }
+    }
+
+    // kReloadComponent / kIoChanged / kLatencyChanged / ... would need the
+    // processor torn down and re-initialised; not implemented. Say so rather
+    // than silently accepting them.
+    const int unhandled = flags & ~Steinberg::Vst::kParamValuesChanged;
+    if (unhandled)
+    {
+        qDebug("Vst3PluginInstance: restartComponent(flags=0x%x) requested but not handled",
+               static_cast<unsigned>(unhandled));
+    }
 }
 
 void Vst3PluginInstance::onControllerEdit(Vst3ParamID id, double value)

@@ -79,6 +79,28 @@ void Vst3ParameterModel::setValueFromPlugin(double normalisedValue)
 	m_settingFromPlugin = false;
 }
 
+void Vst3ParameterModel::syncFromPlugin()
+{
+	if (!m_plugin)
+	{
+		return;
+	}
+
+	const auto current = m_plugin->getParameterNormalized(m_info.id);
+	if (!current)
+	{
+		return;
+	}
+
+	// setValue() adds an undo checkpoint per call unless journalling is off
+	// (AutomatableModel::setValue()). A resync is not a user edit, and a
+	// preset load would otherwise bury the undo stack under one entry per
+	// parameter.
+	const bool wasJournalling = m_valueModel.testAndSetJournalling(false);
+	setValueFromPlugin(*current);
+	m_valueModel.setJournalling(wasJournalling);
+}
+
 void Vst3ParameterModel::onModelChanged()
 {
 	// Two independent reasons this must not reach the plugin:
@@ -147,6 +169,13 @@ void Vst3ParameterModel::loadSettings(const QDomElement& paramElement)
 		m_settingFromPlugin = true;
 		m_valueModel.loadSettings(paramElement, "value");
 		m_settingFromPlugin = false;
+
+		// The saved index was deliberately not forwarded, so the plugin is
+		// still on whatever program its own restored state selected -- the
+		// model now disagrees with it. Pull the plugin's value back in so
+		// the model (and any knob bound to it) shows what the plugin is
+		// really playing, and so the next save writes a truthful value.
+		syncFromPlugin();
 	}
 	else
 	{

@@ -141,6 +141,26 @@ public:
 	void setValueFromPlugin(double normalisedValue);
 
 	/**
+	 * Re-reads this parameter's current value from the plugin's controller
+	 * and mirrors it into the model. Like setValueFromPlugin() it never
+	 * forwards the value back to the plugin; unlike it, it also adds no
+	 * undo step -- this is meant for bulk resyncs (a preset load can move
+	 * hundreds of parameters at once) and for syncing at save time, neither
+	 * of which is a user edit. No-op after detachPlugin() or for an id the
+	 * plugin doesn't know.
+	 *
+	 * Why this exists at all: the plugin -> host direction in the class
+	 * comment above only covers edits the plugin *announces* with
+	 * performEdit(). A plugin that loads one of its own presets typically
+	 * moves its parameters silently and only says so with
+	 * restartComponent(kParamValuesChanged), so without a resync the model
+	 * keeps the old value -- and saveSettings() would then write that stale
+	 * value into the project, where loadSettings() later pushes it back over
+	 * the plugin's own restored state.
+	 */
+	void syncFromPlugin();
+
+	/**
 	 * Called before the owning Vst3PluginInstance is destroyed (unload,
 	 * replacement, or project close). After this, LMMS-side edits to
 	 * valueModel() are still accepted (so a stray automation event or

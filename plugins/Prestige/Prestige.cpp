@@ -369,6 +369,7 @@ void PrestigeInstrument::buildParameterModels()
 	// direction and is wired inside each Vst3ParameterModel itself.
 	m_plugin->setParameterEditedCallback(
 		[this](Vst3ParamID id, double value) { onPluginParameterEdited(id, value); });
+	m_plugin->setParametersChangedCallback([this]() { onPluginParametersChanged(); });
 }
 
 void PrestigeInstrument::teardownParameterModels()
@@ -378,6 +379,7 @@ void PrestigeInstrument::teardownParameterModels()
 		// Stop the plugin from being able to reach a model mid-teardown,
 		// while m_plugin is still valid enough to call this on.
 		m_plugin->setParameterEditedCallback(nullptr);
+		m_plugin->setParametersChangedCallback(nullptr);
 	}
 
 	// Tell every model its plugin is gone before destroying any of them,
@@ -389,6 +391,16 @@ void PrestigeInstrument::teardownParameterModels()
 		model->detachPlugin();
 	}
 	m_parameterModels.clear();
+}
+
+void PrestigeInstrument::onPluginParametersChanged()
+{
+	// The plugin moved parameters on its own (typically a preset load) without
+	// a performEdit() per parameter, so every model is stale until re-read.
+	for (auto& model : m_parameterModels)
+	{
+		model->syncFromPlugin();
+	}
 }
 
 void PrestigeInstrument::onPluginParameterEdited(Vst3ParamID id, double normalisedValue)
@@ -597,7 +609,13 @@ void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 		// attached to one of its parameters, so without this block those
 		// connections would be silently lost on every project save. Keyed by
 		// VST3 parameter ID throughout, same as bundlepath/classcid above.
-		QDomElement paramsNode = doc.createElement("parameters");
+		// Re-read every value from the plugin first (see Vst3EffectControls::
+			// saveSettings()): models can be stale after a preset load.
+			for (auto& model : m_parameterModels)
+			{
+				model->syncFromPlugin();
+			}
+			QDomElement paramsNode = doc.createElement("parameters");
 		for (auto& model : m_parameterModels)
 		{
 			model->saveSettings(doc, paramsNode);

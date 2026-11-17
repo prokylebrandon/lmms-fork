@@ -314,6 +314,11 @@ private:
 	/// Vst3ParameterModel::setValueFromPlugin().
 	void onPluginParameterEdited(Vst3ParamID id, double normalisedValue);
 
+	/// Plugin reported (restartComponent(kParamValuesChanged)) that it changed
+	/// parameter values itself, e.g. by loading one of its own presets.
+	/// Re-reads every model from the plugin; never writes back to it.
+	void onPluginParametersChanged();
+
 	QMutex m_pluginMutex;
 	std::unique_ptr<Vst3PluginInstance> m_plugin;
 	std::vector<std::unique_ptr<Vst3ParameterModel>> m_parameterModels;

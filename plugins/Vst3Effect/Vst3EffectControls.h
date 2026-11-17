@@ -136,6 +136,11 @@ private:
 	//! PrestigeInstrument::onPluginParameterEdited() exactly.
 	void onPluginParameterEdited(Vst3ParamID id, double normalisedValue);
 
+		//! Plugin reported (restartComponent(kParamValuesChanged)) that it changed
+		//! parameter values itself, e.g. by loading one of its own presets.
+		//! Re-reads every model from the plugin; never writes back to it.
+		void onPluginParametersChanged();
+
 	//! Task 4: shared by saveSettings() (the plugin-owned <state> node
 	//! plus the host-side <parameters> automation block) and
 	//! loadSettings() (restoring both, in that order, then reconciling).

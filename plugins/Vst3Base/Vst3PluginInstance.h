@@ -135,6 +135,18 @@ public:
     /// plugin, or the two sides will feed each other.
     using ParameterEditedCallback = std::function<void(Vst3ParamID id, double normalisedValue)>;
 
+    /// Called (on the GUI thread) when the plugin reports, through
+    /// IComponentHandler::restartComponent(kParamValuesChanged), that it has
+    /// changed parameter values by itself rather than as a gesture in its
+    /// editor (those arrive via ParameterEditedCallback instead). The
+    /// canonical case is the plugin loading one of its own presets: it
+    /// moves many parameters at once and, in general, does NOT call
+    /// performEdit() for each of them. The callback should re-read every
+    /// parameter it mirrors with getParameterNormalized() and must NOT write
+    /// the values back into the plugin (same feedback-loop rule as
+    /// ParameterEditedCallback).
+    using ParametersChangedCallback = std::function<void()>;
+
     /// Result of load(); holds either a valid instance or an error string.
     struct LoadResult
     {
@@ -325,6 +337,18 @@ public:
     void setParameterEditedCallback(ParameterEditedCallback cb);
 
     /**
+     * Plugin -> LMMS: register a callback fired when the plugin reports that
+     * it changed parameter values on its own (see ParametersChangedCallback
+     * for the semantics and the preset-load case that motivates it). Pass an
+     * empty function to clear. Only ever invoked on the GUI thread: a
+     * restartComponent() call from any other thread is ignored with a
+     * warning, because the owners' models are GUI-thread objects. Owners must
+     * therefore not rely on this callback alone -- they also re-read the
+     * controller when saving (see Vst3EffectControls::saveSettings()).
+     */
+    void setParametersChangedCallback(ParametersChangedCallback cb);
+
+    /**
      * Return a formatted display string for a parameter value.
      * E.g. "440.0 Hz" or "0.5 dB".
      */
@@ -456,6 +480,10 @@ private:
     // Host-callback entry points (GUI thread)
     void onControllerEdit(Vst3ParamID id, double value);
     void onEditorResizeRequested(int width, int height);
+    // IComponentHandler::restartComponent(). Only kParamValuesChanged is
+    // acted on (see setParametersChangedCallback()); the other restart flags
+    // (kReloadComponent, kIoChanged, ...) are still logged and ignored.
+    void onRestartRequested(int flags);
 
     // Queue a parameter change for the processor WITHOUT touching the
     // controller (used when the controller is the origin of the change).
@@ -482,6 +510,7 @@ private:
 
     // --- Plugin -> host parameter edits (main thread) ---
     ParameterEditedCallback m_paramEditedCb;
+    ParametersChangedCallback m_paramsChangedCb;
 
     // --- Plugin metadata ---
     QString m_name;

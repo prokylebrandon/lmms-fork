@@ -70,6 +70,7 @@ void Vst3EffectControls::buildParameterModels()
 	// each Vst3ParameterModel itself.
 	plugin->setParameterEditedCallback(
 		[this](Vst3ParamID id, double value) { onPluginParameterEdited(id, value); });
+	plugin->setParametersChangedCallback([this]() { onPluginParametersChanged(); });
 }
 
 void Vst3EffectControls::teardownParameterModels()
@@ -86,6 +87,7 @@ void Vst3EffectControls::teardownParameterModels()
 		// Stop the plugin from being able to reach a model mid-teardown,
 		// while the plugin instance is still valid enough to call this on.
 		plugin->setParameterEditedCallback(nullptr);
+			plugin->setParametersChangedCallback(nullptr);
 	}
 
 	// Tell every model its plugin is gone before destroying any of them --
@@ -106,6 +108,16 @@ void Vst3EffectControls::onPluginParameterEdited(Vst3ParamID id, double normalis
 			model->setValueFromPlugin(normalisedValue);
 			return;
 		}
+	}
+}
+
+void Vst3EffectControls::onPluginParametersChanged()
+{
+	// The plugin moved parameters on its own (typically a preset load) without
+	// a performEdit() per parameter, so every model is stale until re-read.
+	for (auto& model : m_parameterModels)
+	{
+		model->syncFromPlugin();
 	}
 }
 
@@ -205,6 +217,14 @@ void Vst3EffectControls::saveSettings(QDomDocument& doc, QDomElement& parent)
 	// connections would be silently lost on every project save. Keyed by
 	// VST3 parameter ID throughout, same as the identity attributes
 	// handled generically elsewhere.
+	// Re-read every value from the plugin first: a plugin that loaded one of
+	// its own presets from a non-GUI thread never reaches the models via
+	// restartComponent(), and a stale model value would be written into the
+	// project and pushed back over the plugin's own state on load.
+	for (auto& model : m_parameterModels)
+	{
+		model->syncFromPlugin();
+	}
 	QDomElement paramsNode = doc.createElement("parameters");
 	for (auto& model : m_parameterModels)
 	{
