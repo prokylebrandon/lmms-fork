@@ -40,6 +40,7 @@
 #include <QPushButton>
 #include <QTextStream>
 #include <QTimer>
+#include "AudioFileDevice.h"
 
 #include "AudioEngine.h"
 #include "embed.h"
@@ -138,6 +139,14 @@ void PrestigeInstrument::play(SampleFrame* workingBuffer)
 		// Layout is guaranteed by the static_assert at the top of this file
 		// (sample_t is float; SampleFrame is a tightly packed L/R pair).
 		auto* out = reinterpret_cast<float*>(workingBuffer);
+		// Tempo / transport for the plugin's ProcessContext.
+		auto* song = Engine::getSong();
+		auto& timeline = song->getTimeline();
+		auto& timeSig = song->getTimeSigModel();
+		const auto framesPerTick = static_cast<double>(Engine::framesPerTick());
+		const double ticks = static_cast<double>(timeline.ticks()) + (framesPerTick > 0.0 ? timeline.frameOffset() / framesPerTick : 0.0);
+		m_plugin->setTransport(static_cast<double>(song->getTempo()), song->isPlaying() || song->isExporting(),
+			ticks / (DefaultTicksPerBar / 4.0), timeSig.getNumerator(), timeSig.getDenominator());
 		m_plugin->processAudio(nullptr, out, frames);
 	}
 
@@ -372,10 +381,38 @@ void PrestigeInstrument::buildParameterModels()
 	m_plugin->setParameterEditedCallback(
 		[this](Vst3ParamID id, double value) { onPluginParameterEdited(id, value); });
 	m_plugin->setParametersChangedCallback([this]() { onPluginParametersChanged(); });
+
+	// Meters, plugin-to-host values and process() failures are reported from the
+	// audio thread; apply them on the GUI thread about 30 times a second.
+	if (!m_outputTimer)
+	{
+		m_outputTimer = new QTimer(this);
+		m_outputTimer->setInterval(33);
+		connect(m_outputTimer, &QTimer::timeout, this, [this]()
+		{
+			if (m_plugin) { m_plugin->pollOutputParameters(); }
+		});
+	}
+	m_outputTimer->start();
+
+	// Follow the audio engine's sample rate / block size (device change, export at
+	// another rate). The engine has stopped audio before it emits this signal.
+	QObject::disconnect(m_rateConnection);
+	m_rateConnection = connect(Engine::audioEngine(), &AudioEngine::sampleRateChanged, this, [this]()
+	{
+		QMutexLocker lock(&m_pluginMutex);
+		if (!m_plugin) { return; }
+		QString err;
+		if (!m_plugin->reconfigure(Engine::audioEngine()->outputSampleRate(), Engine::audioEngine()->framesPerPeriod(), &err, dynamic_cast<AudioFileDevice*>(Engine::audioEngine()->audioDev()) != nullptr))
+		{
+			qWarning("PRESTIGE: could not apply the new sample rate / block size: %s", qPrintable(err));
+		}
+	});
 }
 
 void PrestigeInstrument::teardownParameterModels()
 {
+	if (m_outputTimer) { m_outputTimer->stop(); }
 	if (m_plugin)
 	{
 		// Stop the plugin from being able to reach a model mid-teardown,

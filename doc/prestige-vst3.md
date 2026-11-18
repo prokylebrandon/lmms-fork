@@ -10,26 +10,39 @@ it; consult their own notes for instrument, UI, effect, and hardening work.
 | Field            | Value |
 |------------------|-------|
 | Repository       | https://github.com/steinbergmedia/vst3sdk |
-| Pinned tag       | `v3.7.14_build_34` (first tag on the MIT-licensed branch) |
+| Pinned tag       | `v3.7.14_build_55` (commit `43b4e366ff84afc9b4247776acbf5e234683b77f`) |
 | Submodule path   | `plugins/Vst3Base/vst3sdk` |
 | CMake variable   | `LMMS_HAVE_VST3` (set when submodule is present and `WANT_VST3=ON`) |
 
-### SDK License (as read from that commit's `LICENSE.txt`)
+### SDK License (as read from that commit LICENSE.txt)
 
-As of the 3.8.0 / `v3.7.14_build_34` release line, the core VST3 SDK is
-released under the **MIT License**.  The full text is in
-`plugins/Vst3Base/vst3sdk/LICENSE.txt`.  Key points:
+The pinned commit LICENSE.txt (copyright 2025, Steinberg Media Technologies GmbH)
+offers the SDK under EITHER of two licenses, at the choice of the user:
 
-- The core SDK (`pluginterfaces/`, `base/`, `public.sdk/source/vst/`)
-  is MIT.
-- Bundled sample plugins (`public.sdk/samples/`) carry the same MIT
-  license (checked: all sample `CMakeLists.txt` and source directories
-  reference the top-level `LICENSE.txt`).
-- VSTGUI (in `vstgui4/`) has its own BSD-style license — but VSTGUI is
-  **not vendored** by this phase (and not needed for hosting).
+a) the proprietary **Steinberg VST3 License**: the SDK may not be distributed in
+   parts or in its entirety without prior written agreement from Steinberg, and
+   publishing software under it requires a License Agreement signed by Steinberg; or
+b) the **GNU General Public License, version 3 (GPLv3)**.
 
-MIT is compatible with GPLv2-or-later, which is what every source file in
-this repository uses.  No Steinberg proprietary agreement is needed.
+**This is not MIT.** Steinberg moved the SDK to MIT only with 3.8.0; this pin
+(v3.7.14) predates that. An earlier revision of this document said MIT and was wrong.
+
+What this means for LMMS and for anyone who packages it:
+
+- PRESTIGE uses the **GPLv3** option. Any build that includes the `vst3base`
+  library (which compiles SDK sources) must be distributed under GPLv3 terms,
+  including the corresponding source. The PRESTIGE source files carry
+  GPLv2-or-later headers, so the combined work can be offered under GPLv3; it
+  cannot be distributed as GPLv2-only.
+- A distributor who wants the proprietary option must first obtain a signed
+  agreement from Steinberg.
+- LICENSE.txt applies only to files that reference it; other SDK files carry their
+  own embedded license text, which applies to them.
+- Use of the VST name and logo is governed by Steinberg VST usage guidelines.
+- Building with `WANT_VST3=OFF`, or without the submodule, leaves the SDK out of
+  the build entirely.
+- VSTGUI (in `vstgui4/`) has its own license, but it is **not vendored** (and not
+  needed for hosting).
 
 ---
 

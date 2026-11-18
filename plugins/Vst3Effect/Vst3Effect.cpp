@@ -24,6 +24,7 @@
  */
 
 #include "Vst3Effect.h"
+#include "AudioFileDevice.h"
 
 #include <cassert>
 #include <cstring>
@@ -76,6 +77,18 @@ Vst3Effect::Vst3Effect(Model* parent, const Descriptor::SubPluginFeatures::Key* 
 	}
 	setDisplayName(m_key.name);
 	setDontRun(!loaded);
+
+	// Follow the audio engine's sample rate / block size (device change, export at another rate).
+	connect(Engine::audioEngine(), &AudioEngine::sampleRateChanged, this, [this]()
+	{
+	    QMutexLocker ml(&m_pluginMutex);
+	    if (!m_instance) { return; }
+	    QString err;
+	    if (!m_instance->reconfigure(Engine::audioEngine()->outputSampleRate(), Engine::audioEngine()->framesPerPeriod(), &err, dynamic_cast<AudioFileDevice*>(Engine::audioEngine()->audioDev()) != nullptr))
+	    {
+	        qWarning("Vst3Effect: could not apply the new sample rate / block size: %s", qPrintable(err));
+	    }
+	});
 }
 
 
@@ -217,6 +230,14 @@ Effect::ProcessStatus Vst3Effect::processImpl(SampleFrame* buf, const f_cnt_t fr
 	// block).
 	if (m_pluginMutex.tryLock(Engine::getSong()->isExporting() ? -1 : 0))
 	{
+		// Tempo / transport for the plugin's ProcessContext.
+		auto* song = Engine::getSong();
+		auto& timeline = song->getTimeline();
+		auto& timeSig = song->getTimeSigModel();
+		const auto framesPerTick = static_cast<double>(Engine::framesPerTick());
+		const double ticks = static_cast<double>(timeline.ticks()) + (framesPerTick > 0.0 ? timeline.frameOffset() / framesPerTick : 0.0);
+		m_instance->setTransport(static_cast<double>(song->getTempo()), song->isPlaying() || song->isExporting(),
+			ticks / (DefaultTicksPerBar / 4.0), timeSig.getNumerator(), timeSig.getDenominator());
 		m_instance->processAudio(reinterpret_cast<const float*>(tempBuf.data()),
 			reinterpret_cast<float*>(tempBuf.data()), frames);
 		m_pluginMutex.unlock();

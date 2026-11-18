@@ -219,6 +219,23 @@ public:
      */
     void stopProcessing();
 
+    /**
+     * Re-run setupProcessing() for a new sample rate / block size (the audio
+     * engine changed device or quality). GUI thread only; the caller must hold
+     * whatever keeps the audio thread out of processAudio(). Restarts processing
+     * if it was running. On failure processing stays stopped (silence) and
+     * @p errorOut says why.
+     */
+    bool reconfigure(double sampleRate, int blockSize, QString* errorOut = nullptr, bool offline = false); // offline: kOffline processing (export), otherwise kRealtime
+
+
+    /**
+     * Tempo and transport for the next processAudio() call; it becomes the VST3
+     * ProcessContext. Call it from the thread that calls processAudio(),
+     * immediately before it. Block-level accuracy only.
+     */
+    void setTransport(double tempoBpm, bool playing, double projectTimeQuarters, int timeSigNumerator, int timeSigDenominator);
+
     bool isProcessing() const { return m_processing; }
 
     // ------------------------------------------------------------------ //
@@ -491,6 +508,8 @@ private:
     bool initComponent(int classIndex, QString& error);
     bool initController(QString& error);
     bool initAudioSetup(double sampleRate, int blockSize, QString& error);
+    void buildMidiMapping();
+    bool mapMidiToParameter(const MidiEvent& event, Vst3ParamID& id, double& value) const;
     bool connectComponentController(QString& error);
     void loadParameters();
     void installComponentHandler();
@@ -539,8 +558,19 @@ private:
     // --- Audio setup ---
     double m_sampleRate = 44100.0;
     int    m_blockSize  = 512;
+    std::vector<Vst3ParamID> m_midiMap; // IMidiMapping: [channel * 128 + cc] -> parameter id (kNoParamId = unmapped); only rebuilt while not processing
+    std::vector<Vst3ParamID> m_pitchBendMap; // IMidiMapping kPitchBend, one entry per channel (kNoParamId = unmapped)
     bool   m_processing = false;
+    bool   m_offline = false;          // kOffline process mode (export); set by reconfigure(), used by process()
+    bool   m_transportValid = false;    // setTransport() has been called at least once
+    bool   m_transportPlaying = false;
+    double m_transportTempo = 120.0;
+    double m_transportQuarters = 0.0;
+    int    m_transportSigNum = 4;
+    int    m_transportSigDen = 4;
     bool   m_hasInputBus = false; // false for synths with no audio input bus
+    int    m_numInputChannels  = 2; // main audio bus channel counts, as negotiated in initAudioSetup()
+    int    m_numOutputChannels = 2;
 
     // --- Per-block scratch buffers (allocated once in initAudioSetup) ---
     // These avoid heap allocation inside processAudio().
@@ -579,7 +609,10 @@ private:
     static constexpr std::size_t kQueueCapacity = 2048; // must be a power of two
 
     void* m_paramQueue = nullptr; // Vst3LockFreeQueue<PendingParamChange>*, owned
+    void* m_controllerSyncQueue = nullptr; // Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*, owned: parameter changes made off the GUI thread, applied to the controller by pollOutputParameters()
     void* m_midiQueue  = nullptr; // Vst3LockFreeQueue<PendingMidiEvent>*, owned
+    void* m_blockEventList = nullptr;    // Vst3EventList*, owned: persistent so processAudio() does not allocate
+    void* m_blockParamChanges = nullptr; // Vst3ParameterChanges*, owned: same reason
 
     std::atomic<std::uint64_t> m_droppedParamChanges{0};
 

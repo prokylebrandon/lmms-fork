@@ -135,7 +135,7 @@ public:
             e.midiCCOut.channel    = midiEvent.channel();
             e.midiCCOut.controlNumber = Steinberg::Vst::kPitchBend;
             // Split 14-bit value into LSB/MSB
-            const uint16_t raw = static_cast<uint16_t>(midiEvent.pitchBend() + 0x2000);
+            const uint16_t raw = static_cast<uint16_t>(midiEvent.pitchBend() & 0x3FFF);
             e.midiCCOut.value  = raw & 0x7F;
             e.midiCCOut.value2 = (raw >> 7) & 0x7F;
             m_events.push_back(e);

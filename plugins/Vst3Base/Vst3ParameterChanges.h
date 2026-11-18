@@ -106,7 +106,7 @@ class Vst3ParameterChanges final : public Steinberg::Vst::IParameterChanges
 public:
     static constexpr int kMaxChanges = 128;
 
-    Vst3ParameterChanges() { m_queues.reserve(kMaxChanges); }
+    Vst3ParameterChanges() { m_queues.reserve(kMaxChanges); m_queuePtrs.reserve(kMaxChanges); }
 
     void clear()
     {
@@ -116,6 +116,17 @@ public:
 
     void addChange(Vst3ParamID id, double normValue)
     {
+        // One queue per parameter id per block (the VST3 contract): a later change
+        // to the same parameter replaces the earlier point instead of adding a queue.
+        for (auto& q : m_queues)
+        {
+            if (static_cast<Vst3ParamID>(q.getParameterId()) == id)
+            {
+                Steinberg::int32 ignoredIndex = 0;
+                (void)q.addPoint(0, normValue, ignoredIndex);
+                return;
+            }
+        }
         if (static_cast<int>(m_queues.size()) >= kMaxChanges) return;
         m_queues.emplace_back(id, normValue);
         m_queuePtrs.push_back(&m_queues.back());

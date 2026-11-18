@@ -40,6 +40,7 @@
 
 class QLabel;
 class QPushButton;
+class QTimer;
 class QWidget;
 
 namespace lmms
@@ -320,6 +321,8 @@ private:
 	void onPluginParametersChanged();
 
 	QMutex m_pluginMutex;
+	QTimer* m_outputTimer = nullptr; // GUI-thread poll of plugin output values (meters, process() failures)
+	QMetaObject::Connection m_rateConnection; // AudioEngine::sampleRateChanged -> reconfigure the plugin
 	std::unique_ptr<Vst3PluginInstance> m_plugin;
 	std::vector<std::unique_ptr<Vst3ParameterModel>> m_parameterModels;
 

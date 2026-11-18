@@ -89,10 +89,38 @@ void Vst3SubPluginFeatures::scanDir(const QString& dirPath, QStringList& bundles
 	}
 }
 
+//! Folders searched for .vst3 bundles: the user's configured folder first, then
+//! the platform's standard VST3 locations. De-duplicated by real path so a
+//! configured folder that equals a standard one is not scanned twice.
+static QStringList vst3SearchDirs()
+{
+    QStringList dirs;
+    dirs << ConfigManager::inst()->vst3Dir();
+#if defined(Q_OS_WIN)
+    const QString commonFiles = qEnvironmentVariable("CommonProgramFiles");
+    if (!commonFiles.isEmpty()) { dirs << commonFiles + "/VST3"; }
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    if (!localAppData.isEmpty()) { dirs << localAppData + "/Programs/Common/VST3"; }
+#elif defined(Q_OS_MACOS)
+    dirs << QStringLiteral("/Library/Audio/Plug-Ins/VST3") << QDir::homePath() + "/Library/Audio/Plug-Ins/VST3";
+#else
+    dirs << QDir::homePath() + "/.vst3" << QStringLiteral("/usr/lib/vst3") << QStringLiteral("/usr/local/lib/vst3");
+#endif
+
+    QStringList unique;
+    for (const QString& d : dirs)
+    {
+        const QString canonical = QDir(d).canonicalPath(); // empty if the folder does not exist
+        if (!canonical.isEmpty() && !unique.contains(canonical)) { unique << canonical; }
+    }
+    return unique;
+}
+
 void Vst3SubPluginFeatures::listSubPluginKeys(const Plugin::Descriptor* desc, KeyList& kl) const
 {
 	QStringList bundles;
-	scanDir(ConfigManager::inst()->vst3Dir(), bundles);
+	for (const QString& searchDir : vst3SearchDirs()) { scanDir(searchDir, bundles); }
+	bundles.removeDuplicates();
 
 	for (const QString& bundlePath : bundles)
 	{

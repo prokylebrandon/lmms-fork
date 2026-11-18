@@ -41,6 +41,7 @@
 #include <pluginterfaces/vst/ivstevents.h>
 #include <pluginterfaces/vst/vsttypes.h>
 #include <pluginterfaces/vst/ivstprocesscontext.h>
+#include <pluginterfaces/vst/vstspeaker.h>
 #include <pluginterfaces/base/funknownimpl.h>
 
 #include <QCoreApplication>
@@ -671,7 +672,7 @@ void Vst3PluginInstance::installComponentHandler()
     // released in the destructor.  The controller takes its own reference.
     auto* handler = new Vst3ComponentHandlerImpl(this);
     m_componentHandler = handler;
-    cast<Steinberg::Vst::IEditController>(m_controller)->setComponentHandler(handler);
+    Vst3WarnIfFailed(cast<Steinberg::Vst::IEditController>(m_controller)->setComponentHandler(handler), "IEditController::setComponentHandler()");
 }
 
 bool Vst3PluginInstance::connectComponentController(QString& error)
@@ -726,6 +727,35 @@ bool Vst3PluginInstance::initAudioSetup(double sampleRate, int blockSize, QStrin
     auto* proc = cast<Steinberg::Vst::IAudioProcessor>(m_audioProcessor);
     auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
 
+    // ---- Negotiate the main bus layout (before setupProcessing, per the VST3 spec) ----
+    // Ask for stereo on the main audio buses. A plugin that refuses (mono-only,
+    // surround-only) keeps its own layout; it is read back here so processAudio()
+    // hands the plugin exactly the channel count it expects.
+    {
+        const int nIn  = comp->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kInput);
+        const int nOut = comp->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput);
+        std::vector<Steinberg::Vst::SpeakerArrangement> ins(static_cast<std::size_t>(nIn), Steinberg::Vst::SpeakerArr::kStereo);
+        std::vector<Steinberg::Vst::SpeakerArrangement> outs(static_cast<std::size_t>(nOut), Steinberg::Vst::SpeakerArr::kStereo);
+        for (int i = 0; i < nIn; ++i)  { (void)proc->getBusArrangement(Steinberg::Vst::kInput,  i, ins[static_cast<std::size_t>(i)]); }
+        for (int i = 0; i < nOut; ++i) { (void)proc->getBusArrangement(Steinberg::Vst::kOutput, i, outs[static_cast<std::size_t>(i)]); }
+        if (nIn > 0)  { ins[0]  = Steinberg::Vst::SpeakerArr::kStereo; }
+        if (nOut > 0) { outs[0] = Steinberg::Vst::SpeakerArr::kStereo; }
+        // A refusal is expected for plugins with a fixed layout, so it is not logged as an error.
+        (void)proc->setBusArrangements(nIn > 0 ? ins.data() : nullptr, nIn, nOut > 0 ? outs.data() : nullptr, nOut);
+
+        Steinberg::Vst::SpeakerArrangement arr = Steinberg::Vst::SpeakerArr::kStereo;
+        m_numInputChannels  = 2;
+        m_numOutputChannels = 2;
+        if (nIn > 0 && proc->getBusArrangement(Steinberg::Vst::kInput, 0, arr) == Steinberg::kResultOk)
+        {
+            m_numInputChannels = std::max(1, static_cast<int>(Steinberg::Vst::SpeakerArr::getChannelCount(arr)));
+        }
+        if (nOut > 0 && proc->getBusArrangement(Steinberg::Vst::kOutput, 0, arr) == Steinberg::kResultOk)
+        {
+            m_numOutputChannels = std::max(1, static_cast<int>(Steinberg::Vst::SpeakerArr::getChannelCount(arr)));
+        }
+    }
+
     // Set up process setup
     Steinberg::Vst::ProcessSetup setup{};
     setup.processMode        = Steinberg::Vst::kRealtime;
@@ -748,12 +778,10 @@ bool Vst3PluginInstance::initAudioSetup(double sampleRate, int blockSize, QStrin
     m_hasInputBus = numInputBuses > 0;
 
     for (int i = 0; i < numInputBuses; ++i)
-        comp->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, i,
-                          i == 0 /*main bus only*/);
+        Vst3WarnIfFailed(comp->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, i, i == 0 /*main bus only*/), "IComponent::activateBus(audio input)");
 
     for (int i = 0; i < numOutputBuses; ++i)
-        comp->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, i,
-                          i == 0 /*main bus only*/);
+        Vst3WarnIfFailed(comp->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, i, i == 0 /*main bus only*/), "IComponent::activateBus(audio output)");
 
     // Also activate event input bus (MIDI) if present
     const int numEventInputs = comp->getBusCount(Steinberg::Vst::kEvent,
@@ -766,19 +794,22 @@ bool Vst3PluginInstance::initAudioSetup(double sampleRate, int blockSize, QStrin
 
     // Pre-allocate scratch buffers for processAudio() — no allocation inside
     // the audio callback.
-    m_inputBuf.assign(static_cast<std::size_t>(blockSize) * 2, 0.0f);
-    m_outputBuf.assign(static_cast<std::size_t>(blockSize) * 2, 0.0f);
+    m_inputBuf.assign(static_cast<std::size_t>(blockSize) * static_cast<std::size_t>(std::max(2, m_numInputChannels)), 0.0f);
+    m_outputBuf.assign(static_cast<std::size_t>(blockSize) * static_cast<std::size_t>(std::max(2, m_numOutputChannels)), 0.0f);
 
     // VST3 uses planar (non-interleaved) channel pointers.
     // We'll split our interleaved LMMS buffer into L/R planes on each call.
-    m_inputPtrs.resize(2);
-    m_outputPtrs.resize(2);
+    m_inputPtrs.resize(static_cast<std::size_t>(std::max(2, m_numInputChannels)));
+    m_outputPtrs.resize(static_cast<std::size_t>(std::max(2, m_numOutputChannels)));
 
     // Allocate the lock-free pending queues once, up front: push()/pop() on
     // them never allocate, so everything they need is in place before the
     // first processAudio() call.
     m_paramQueue = new Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>();
+    m_controllerSyncQueue = new Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>();
     m_midiQueue  = new Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>();
+    m_blockEventList = new Vst3EventList();
+    m_blockParamChanges = new Vst3ParameterChanges();
 
     // Belt-and-suspenders alongside m_activeNotes's own NSDMI: explicitly
     // establish the known-empty starting state before this instance is
@@ -847,7 +878,13 @@ Vst3PluginInstance::~Vst3PluginInstance()
     delete static_cast<Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*>(m_paramQueue);
     delete static_cast<Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>*>(m_midiQueue);
     m_paramQueue = nullptr;
+    delete static_cast<Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*>(m_controllerSyncQueue);
+    m_controllerSyncQueue = nullptr;
     m_midiQueue  = nullptr;
+    delete static_cast<Vst3EventList*>(m_blockEventList);
+    delete static_cast<Vst3ParameterChanges*>(m_blockParamChanges);
+    m_blockEventList = nullptr;
+    m_blockParamChanges = nullptr;
 
     // Disconnect IConnectionPoint
     if (m_compConnection && m_ctrlConnection)
@@ -903,8 +940,8 @@ Vst3PluginInstance::~Vst3PluginInstance()
     // Component
     if (m_component)
     {
-        cast<Steinberg::Vst::IComponent>(m_component)->setActive(false);
-        cast<Steinberg::Vst::IComponent>(m_component)->terminate();
+        (void)cast<Steinberg::Vst::IComponent>(m_component)->setActive(false); // teardown: nothing useful can be done if this fails
+        (void)cast<Steinberg::Vst::IComponent>(m_component)->terminate(); // teardown: nothing useful can be done if this fails
         safeRelease<Steinberg::Vst::IComponent>(m_component);
     }
 
@@ -930,6 +967,7 @@ Vst3PluginInstance::~Vst3PluginInstance()
 bool Vst3PluginInstance::startProcessing(QString* errorOut)
 {
     if (m_processing) return true;
+    buildMidiMapping(); // GUI thread, not processing yet: nothing else reads the table
 
     auto* proc = cast<Steinberg::Vst::IAudioProcessor>(m_audioProcessor);
     QString err;
@@ -942,6 +980,123 @@ bool Vst3PluginInstance::startProcessing(QString* errorOut)
         return false;
     }
     m_processing = true;
+    return true;
+}
+
+void Vst3PluginInstance::setTransport(double tempoBpm, bool playing, double projectTimeQuarters, int timeSigNumerator, int timeSigDenominator)
+{
+    m_transportTempo     = tempoBpm > 0.0 ? tempoBpm : 120.0;
+    m_transportPlaying   = playing;
+    m_transportQuarters  = projectTimeQuarters;
+    m_transportSigNum    = timeSigNumerator > 0 ? timeSigNumerator : 4;
+    m_transportSigDen    = timeSigDenominator > 0 ? timeSigDenominator : 4;
+    m_transportValid     = true;
+}
+
+bool Vst3PluginInstance::reconfigure(double sampleRate, int blockSize, QString* errorOut, bool offline)
+{
+    auto fail = [&](const QString& why) { if (errorOut) { *errorOut = why; } return false; };
+    if (!m_component || !m_audioProcessor) { return fail(QStringLiteral("VST3: reconfigure() on an instance that is not set up")); }
+    if (sampleRate <= 0.0 || blockSize <= 0) { return fail(QStringLiteral("VST3: reconfigure() with an invalid sample rate or block size")); }
+    if (sampleRate == m_sampleRate && blockSize == m_blockSize && offline == m_offline) { return true; }
+
+    const bool wasProcessing = m_processing;
+    stopProcessing();
+
+    auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
+    auto* proc = cast<Steinberg::Vst::IAudioProcessor>(m_audioProcessor);
+
+    // setupProcessing() is only allowed while the component is inactive.
+    (void)comp->setActive(false);
+
+    Steinberg::Vst::ProcessSetup setup{};
+    setup.processMode        = offline ? Steinberg::Vst::kOffline : Steinberg::Vst::kRealtime;
+    setup.symbolicSampleSize = Steinberg::Vst::kSample32;
+    setup.maxSamplesPerBlock = blockSize;
+    setup.sampleRate         = sampleRate;
+
+    QString err;
+    if (!check(proc->setupProcessing(setup), "setupProcessing (reconfigure)", err)) { return fail(err); }
+    if (!check(comp->setActive(true), "IComponent::setActive(true) (reconfigure)", err)) { return fail(err); }
+
+    m_inputBuf.assign(static_cast<std::size_t>(blockSize) * static_cast<std::size_t>(std::max(2, m_numInputChannels)), 0.0f);
+    m_outputBuf.assign(static_cast<std::size_t>(blockSize) * static_cast<std::size_t>(std::max(2, m_numOutputChannels)), 0.0f);
+    m_sampleRate = sampleRate;
+    m_blockSize  = blockSize;
+    m_offline = offline;
+
+    if (wasProcessing) { return startProcessing(errorOut); }
+    return true;
+}
+
+void Vst3PluginInstance::buildMidiMapping()
+{
+    m_midiMap.clear();
+    m_pitchBendMap.clear();
+    if (!m_controller) { return; }
+
+    auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
+    auto* mapping = Steinberg::FUnknownPtr<Steinberg::Vst::IMidiMapping>(ctrl).getInterface();
+    if (!mapping) { return; }
+
+    const auto none = static_cast<Vst3ParamID>(Steinberg::Vst::kNoParamId);
+    std::vector<Vst3ParamID> table(static_cast<std::size_t>(MidiChannelCount) * 128, none);
+    bool any = false;
+    for (int channel = 0; channel < MidiChannelCount; ++channel)
+    {
+        for (int cc = 0; cc < 128; ++cc)
+        {
+            Steinberg::Vst::ParamID pid = Steinberg::Vst::kNoParamId;
+            if (mapping->getMidiControllerAssignment(0, static_cast<Steinberg::int16>(channel),
+                    static_cast<Steinberg::Vst::CtrlNumber>(cc), pid) == Steinberg::kResultTrue
+                && pid != Steinberg::Vst::kNoParamId)
+            {
+                table[static_cast<std::size_t>(channel) * 128 + static_cast<std::size_t>(cc)] = static_cast<Vst3ParamID>(pid);
+                any = true;
+            }
+        }
+    }
+    if (any) { m_midiMap = std::move(table); }
+
+    // Pitch bend has its own controller number (kPitchBend) in IMidiMapping.
+    bool anyBend = false;
+    std::vector<Vst3ParamID> bendTable(static_cast<std::size_t>(MidiChannelCount), none);
+    for (int channel = 0; channel < MidiChannelCount; ++channel)
+    {
+        Steinberg::Vst::ParamID pid = Steinberg::Vst::kNoParamId;
+        if (mapping->getMidiControllerAssignment(0, static_cast<Steinberg::int16>(channel),
+                Steinberg::Vst::kPitchBend, pid) == Steinberg::kResultTrue
+            && pid != Steinberg::Vst::kNoParamId)
+        {
+            bendTable[static_cast<std::size_t>(channel)] = static_cast<Vst3ParamID>(pid);
+            anyBend = true;
+        }
+    }
+    if (anyBend) { m_pitchBendMap = std::move(bendTable); }
+}
+
+bool Vst3PluginInstance::mapMidiToParameter(const MidiEvent& event, Vst3ParamID& id, double& value) const
+{
+    // Audio thread: table lookup only, no allocation, no controller call.
+    if (event.type() == MidiPitchBend)
+    {
+        const int bendChannel = event.channel();
+        if (m_pitchBendMap.empty() || bendChannel < 0 || bendChannel >= MidiChannelCount) { return false; }
+        const Vst3ParamID bendId = m_pitchBendMap[static_cast<std::size_t>(bendChannel)];
+        if (bendId == static_cast<Vst3ParamID>(Steinberg::Vst::kNoParamId)) { return false; }
+        id = bendId;
+        // LMMS carries pitch bend as an unsigned 14-bit value: 0..16383, centre 8192.
+        value = std::min(1.0, std::max(0.0, static_cast<double>(event.pitchBend()) / 16383.0));
+        return true;
+    }
+    if (m_midiMap.empty() || event.type() != MidiControlChange) { return false; }
+    const int channel = event.channel();
+    const int cc = event.controllerNumber();
+    if (channel < 0 || channel >= MidiChannelCount || cc < 0 || cc >= 128) { return false; }
+    const Vst3ParamID mapped = m_midiMap[static_cast<std::size_t>(channel) * 128 + static_cast<std::size_t>(cc)];
+    if (mapped == static_cast<Vst3ParamID>(Steinberg::Vst::kNoParamId)) { return false; }
+    id = mapped;
+    value = static_cast<double>(event.controllerValue()) / 127.0;
     return true;
 }
 
@@ -984,58 +1139,89 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     auto* midiQueue  = static_cast<Vst3LockFreeQueue<PendingMidiEvent, kQueueCapacity>*>(m_midiQueue);
 
     // ---- Build per-block parameter changes ----
-    Vst3ParameterChanges paramChanges;
+    auto& paramChanges = *static_cast<Vst3ParameterChanges*>(m_blockParamChanges); paramChanges.clear();
     while (auto pc = paramQueue->pop())
         paramChanges.addChange(pc->id, pc->value);
 
     // ---- Build per-block event list ----
-    Vst3EventList eventList;
+    auto& eventList = *static_cast<Vst3EventList*>(m_blockEventList); eventList.clear();
     while (auto pe = midiQueue->pop())
-        eventList.addMidiEvent(pe->event, pe->sampleOffset);
+    {
+        // CC reaches a VST3 plugin as a parameter change through its IMidiMapping,
+        // not as an event (kLegacyMIDICCOutEvent is plugin -> host and is ignored).
+        Vst3ParamID mappedId = 0;
+        double mappedValue = 0.0;
+        if (mapMidiToParameter(pe->event, mappedId, mappedValue))
+        {
+            paramChanges.addChange(mappedId, mappedValue);
+        }
+        else
+        {
+            eventList.addMidiEvent(pe->event, pe->sampleOffset);
+        }
+    }
 
     // ---- De-interleave input (L R L R …) → planar (L… R…) ----
     const std::size_t nf = static_cast<std::size_t>(numFrames);
+    const std::size_t inCh  = static_cast<std::size_t>(m_numInputChannels);
+    const std::size_t outCh = static_cast<std::size_t>(m_numOutputChannels);
+    const std::size_t inPlanes  = std::max<std::size_t>(2, inCh);
+    const std::size_t outPlanes = std::max<std::size_t>(2, outCh);
     float* inL = m_inputBuf.data();
     float* inR = m_inputBuf.data() + nf;
     float* outL = m_outputBuf.data();
     float* outR = m_outputBuf.data() + nf;
 
+    // LMMS hands over interleaved stereo. Planes 0 and 1 take L and R; a mono
+    // input bus gets L+R mixed down; any extra planes (a surround layout the
+    // plugin insisted on) are fed silence.
+    std::fill(m_inputBuf.data(), m_inputBuf.data() + nf * inPlanes, 0.0f);
     if (inputs)
     {
-        for (std::size_t i = 0; i < nf; ++i)
+        if (inCh == 1)
         {
-            inL[i] = inputs[i * 2];
-            inR[i] = inputs[i * 2 + 1];
+            for (std::size_t i = 0; i < nf; ++i) { inL[i] = 0.5f * (inputs[i * 2] + inputs[i * 2 + 1]); }
+        }
+        else
+        {
+            for (std::size_t i = 0; i < nf; ++i) { inL[i] = inputs[i * 2]; inR[i] = inputs[i * 2 + 1]; }
         }
     }
-    else
-    {
-        std::fill(inL, inL + nf, 0.0f);
-        std::fill(inR, inR + nf, 0.0f);
-    }
-    std::fill(outL, outL + nf, 0.0f);
-    std::fill(outR, outR + nf, 0.0f);
+    std::fill(m_outputBuf.data(), m_outputBuf.data() + nf * outPlanes, 0.0f);
 
-    m_inputPtrs[0]  = inL;
-    m_inputPtrs[1]  = inR;
-    m_outputPtrs[0] = outL;
-    m_outputPtrs[1] = outR;
-
+    for (std::size_t p = 0; p < inCh; ++p)  { m_inputPtrs[p]  = m_inputBuf.data()  + p * nf; }
+    for (std::size_t p = 0; p < outCh; ++p) { m_outputPtrs[p] = m_outputBuf.data() + p * nf; }${2}
     // ---- Assemble VST3 AudioBusBuffers ----
     Steinberg::Vst::AudioBusBuffers inputBusBuffers{};
-    inputBusBuffers.numChannels         = 2;
+    inputBusBuffers.numChannels         = static_cast<Steinberg::int32>(inCh);
     inputBusBuffers.channelBuffers32    = m_inputPtrs.data();
     inputBusBuffers.silenceFlags        = 0;
 
     Steinberg::Vst::AudioBusBuffers outputBusBuffers{};
-    outputBusBuffers.numChannels        = 2;
+    outputBusBuffers.numChannels        = static_cast<Steinberg::int32>(outCh);
     outputBusBuffers.channelBuffers32   = m_outputPtrs.data();
     outputBusBuffers.silenceFlags       = 0;
 
     // ---- Assemble ProcessData ----
     Vst3OutputParamChanges outParamChanges; // the plugin writes meter etc. values here
+    // ---- Transport context: tempo, play state, position, time signature ----
+    Steinberg::Vst::ProcessContext transportContext{};
+    if (m_transportValid)
+    {
+        transportContext.state = Steinberg::Vst::ProcessContext::kTempoValid
+                               | Steinberg::Vst::ProcessContext::kTimeSigValid
+                               | Steinberg::Vst::ProcessContext::kProjectTimeMusicValid
+                               | (m_transportPlaying ? Steinberg::Vst::ProcessContext::kPlaying : 0u);
+        transportContext.sampleRate         = m_sampleRate;
+        transportContext.tempo              = m_transportTempo;
+        transportContext.timeSigNumerator   = m_transportSigNum;
+        transportContext.timeSigDenominator = m_transportSigDen;
+        transportContext.projectTimeMusic   = m_transportQuarters;
+        transportContext.projectTimeSamples = static_cast<Steinberg::Vst::TSamples>(
+            m_transportQuarters * 60.0 / m_transportTempo * m_sampleRate);
+    }
     Steinberg::Vst::ProcessData pd{};
-    pd.processMode         = Steinberg::Vst::kRealtime;
+    pd.processMode         = m_offline ? Steinberg::Vst::kOffline : Steinberg::Vst::kRealtime;
     pd.symbolicSampleSize  = Steinberg::Vst::kSample32;
     pd.numSamples          = numFrames;
     pd.numInputs           = m_hasInputBus ? 1 : 0;
@@ -1046,7 +1232,7 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     pd.outputParameterChanges = &outParamChanges; // plugin -> host values (meters)
     pd.inputEvents            = &eventList;
     pd.outputEvents           = nullptr;
-    pd.processContext         = nullptr; // transport context not wired in Phase 1
+    pd.processContext         = m_transportValid ? &transportContext : nullptr;
 
     const Steinberg::tresult processResult = proc->process(pd);
     if (processResult != Steinberg::kResultOk)
@@ -1081,7 +1267,7 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     for (std::size_t i = 0; i < nf; ++i)
     {
         outputs[i * 2]     = outL[i];
-        outputs[i * 2 + 1] = outR[i];
+        outputs[i * 2 + 1] = (outCh == 1) ? outL[i] : outR[i];
     }
 }
 
@@ -1224,12 +1410,23 @@ void Vst3PluginInstance::queueForProcessor(Vst3ParamID id, double value)
 
 void Vst3PluginInstance::queueParameterChange(Vst3ParamID id, double normalisedValue)
 {
-    // Also inform the controller so its internal state stays in sync
+    // IEditController is GUI-thread only. Automation applied during playback
+    // reaches this on the audio thread, so there the controller is not touched:
+    // the change goes to m_controllerSyncQueue and pollOutputParameters()
+    // applies it on the GUI thread. A dropped sync only delays what the
+    // plugin's own editor shows; the processor still gets the change below.
     if (m_controller)
     {
-        auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
-        ctrl->setParamNormalized(static_cast<Steinberg::Vst::ParamID>(id),
-                                  normalisedValue);
+        const QCoreApplication* app = QCoreApplication::instance();
+        if (app && QThread::currentThread() == app->thread())
+        {
+            auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
+            (void)ctrl->setParamNormalized(static_cast<Steinberg::Vst::ParamID>(id), normalisedValue);
+        }
+        else if (auto* syncQueue = static_cast<Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*>(m_controllerSyncQueue))
+        {
+            (void)syncQueue->push({ id, normalisedValue });
+        }
     }
     queueForProcessor(id, normalisedValue);
 }
@@ -1250,6 +1447,16 @@ void Vst3PluginInstance::pollOutputParameters()
     // into the plugin) and nothing is queued for the processor.
     auto* ctrl = m_controller ? cast<Steinberg::Vst::IEditController>(m_controller) : nullptr;
 
+    // Parameter changes made off the GUI thread (automation during playback) are
+    // applied to the controller here; IEditController is GUI-thread only.
+    auto* syncQueue = static_cast<Vst3LockFreeQueue<PendingParamChange, kQueueCapacity>*>(m_controllerSyncQueue);
+    if (ctrl && syncQueue)
+    {
+        while (auto pc = syncQueue->pop())
+        {
+            (void)ctrl->setParamNormalized(static_cast<Steinberg::Vst::ParamID>(pc->id), pc->value);
+        }
+    }
     m_outputParamSlots.drain([&](Vst3ParamID id, double value)
     {
         if (ctrl)
@@ -1481,7 +1688,7 @@ void Vst3PluginInstance::onEditorResizeRequested(int width, int height)
         m_editorResizeCb(width, height);
 
     Steinberg::ViewRect rect(0, 0, width, height);
-    cast<Steinberg::IPlugView>(m_plugView)->onSize(&rect);
+    (void)cast<Steinberg::IPlugView>(m_plugView)->onSize(&rect); // the plugin may decline a size it cannot honour; the host window is already resized, so there is nothing to recover
 
     m_inEditorResize = false;
 }
