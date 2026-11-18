@@ -2,8 +2,8 @@
 name: build
 'on': [push, pull_request]
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
 jobs:
   linux-x86_64:
     name: linux-x86_64
