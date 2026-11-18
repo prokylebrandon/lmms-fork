@@ -276,6 +276,13 @@ public:
     void clearMidiQueue();
 
     /**
+     * Set a note pitch bend in semitones (piano-roll detuning). Delivered as a VST3 tuning
+     * note expression on the next processAudio(). @p noteId is the MIDI key the note was
+     * started with. Any thread, lock-free.
+     */
+    void setNoteTuning(int noteId, float semitones);
+
+    /**
      * Diagnostics only: number of MIDI events dropped because the lock-free
      * queue (see kQueueCapacity) was full when queueMidiEvent() was called.
      * Expected to stay 0 for any real plugin/session; a nonzero value means
@@ -652,6 +659,12 @@ private:
     // actually succeeded, so a dropped NoteOff can never cause a stuck
     // note to be skipped by flushActiveNotes().
     std::atomic<bool> m_activeNotes[MidiChannelCount][MidiMaxKey + 1] {};
+
+    // --- Per-note tuning (piano-roll pitch bend), written by setNoteTuning(), any thread ---
+    // Semitones plus a changed flag per VST3 noteId (= MIDI key). processAudio() turns each
+    // changed note into one tuning note-expression event.
+    std::atomic<float> m_noteTuning[MidiMaxKey + 1] {};
+    std::atomic<bool> m_noteTuningDirty[MidiMaxKey + 1] {};
 };
 
 } // namespace lmms

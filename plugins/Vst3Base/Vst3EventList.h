@@ -27,10 +27,12 @@
 
 #include <pluginterfaces/vst/ivstevents.h>
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
+#include <pluginterfaces/vst/ivstnoteexpression.h>
 #include <pluginterfaces/vst/vsttypes.h>
 #include "MidiEvent.h"
 
 #include <vector>
+#include <algorithm>
 #include <cmath>
 
 namespace lmms
@@ -97,7 +99,7 @@ public:
                 e.noteOff.channel    = midiEvent.channel();
                 e.noteOff.pitch      = static_cast<Steinberg::int16>(midiEvent.key());
                 e.noteOff.velocity   = 0.0f;
-                e.noteOff.noteId     = -1;
+                e.noteOff.noteId     = static_cast<Steinberg::int32>(midiEvent.key());
                 e.noteOff.tuning     = 0.0f;
             }
             else
@@ -108,7 +110,7 @@ public:
                 // Normalise velocity: MIDI [1,127] → VST3 (0,1]
                 e.noteOn.velocity  = static_cast<float>(midiEvent.velocity()) / 127.0f;
                 e.noteOn.length    = 0;  // unknown at note-on time
-                e.noteOn.noteId    = -1; // host assigns noteId; -1 = unassigned
+                e.noteOn.noteId    = static_cast<Steinberg::int32>(midiEvent.key()); // VST3 noteId = MIDI key (unique: LMMS runs one note per key)
                 e.noteOn.tuning    = 0.0f;
             }
             m_events.push_back(e);
@@ -119,7 +121,7 @@ public:
             e.noteOff.channel    = midiEvent.channel();
             e.noteOff.pitch      = static_cast<Steinberg::int16>(midiEvent.key());
             e.noteOff.velocity   = static_cast<float>(midiEvent.velocity()) / 127.0f;
-            e.noteOff.noteId     = -1;
+            e.noteOff.noteId     = static_cast<Steinberg::int32>(midiEvent.key());
             e.noteOff.tuning     = 0.0f;
             m_events.push_back(e);
             break;
@@ -166,6 +168,29 @@ public:
             break;
         }
     }
+
+    /**
+     * Append a tuning note-expression event (per-note pitch bend) for the note started with
+     * @p noteId (this class uses the MIDI key as noteId). @p semitones is clamped to +-120 and
+     * normalised as VST3 defines tuning: 0 = -120, 0.5 = 0, 1 = +120 semitones.
+     */
+    void addNoteTuning(Steinberg::int32 noteId, float semitones, Steinberg::int32 sampleOffset)
+    {
+        Steinberg::Vst::Event e{};
+        e.busIndex     = 0;
+        e.sampleOffset = sampleOffset;
+        e.ppqPosition  = 0.0;
+        e.flags        = Steinberg::Vst::Event::kIsLive;
+        e.type         = Steinberg::Vst::Event::kNoteExpressionValueEvent;
+        e.noteExpressionValue.typeId = Steinberg::Vst::kTuningTypeID;
+        e.noteExpressionValue.noteId = noteId;
+        const float st = std::clamp(semitones, -120.0f, 120.0f);
+        e.noteExpressionValue.value  = (st + 120.0f) / 240.0f;
+        m_events.push_back(e);
+    }
+
+    /// Sample offset of the most recently added event, or 0 when the list is empty.
+    Steinberg::int32 lastSampleOffset() const { return m_events.empty() ? 0 : m_events.back().sampleOffset; }
 
     // ------------------------------------------------------------------
     // IEventList

@@ -143,6 +143,7 @@ public:
 	~PrestigeInstrument() override;
 
 	void play(SampleFrame* workingBuffer) override;
+	void playNote(NotePlayHandle* n, SampleFrame* workingBuffer) override;
 
 	void saveSettings(QDomDocument& doc, QDomElement& parent) override;
 	void loadSettings(const QDomElement& thisElement) override;
@@ -321,6 +322,12 @@ private:
 	void onPluginParametersChanged();
 
 	QMutex m_pluginMutex;
+
+	// Per-note pitch bend in semitones, indexed by the MIDI key the plugin received (= VST3 noteId).
+	// playNote() (audio thread, no lock) writes m_pendingBend; play() (under m_pluginMutex)
+	// forwards changes to the plugin and remembers what it sent in m_sentBend.
+	std::atomic<float> m_pendingBend[MidiMaxKey + 1] {};
+	float m_sentBend[MidiMaxKey + 1] {};
 	QTimer* m_outputTimer = nullptr; // GUI-thread poll of plugin output values (meters, process() failures)
 	QMetaObject::Connection m_rateConnection; // AudioEngine::sampleRateChanged -> reconfigure the plugin
 	std::unique_ptr<Vst3PluginInstance> m_plugin;

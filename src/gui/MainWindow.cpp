@@ -271,10 +271,13 @@ void MainWindow::finalize()
 		const QKeySequence& shortcut, auto(MainWindow::* slot)()) -> QAction*
 	{
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 3, 0))
-		return menu->addAction(embed::getIconPixmap(icon), text, shortcut, this, slot);
+		QAction* action = menu->addAction(embed::getIconPixmap(icon), text, shortcut, this, slot);
 #else
-		return menu->addAction(embed::getIconPixmap(icon), text, this, slot, shortcut);
+		QAction* action = menu->addAction(embed::getIconPixmap(icon), text, this, slot, shortcut);
 #endif
+		// A window-scoped shortcut is dead while a detached sub-window (its own top-level window) is active.
+		action->setShortcutContext(Qt::ApplicationShortcut);
+		return action;
 	};
 
 	// project-popup-menu

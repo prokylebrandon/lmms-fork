@@ -23,6 +23,8 @@
  */
 
 #include "Prestige.h"
+#include "InstrumentTrack.h"
+#include "NotePlayHandle.h"
 
 #include <QDebug>
 #include <QDomDocument>
@@ -147,10 +149,33 @@ void PrestigeInstrument::play(SampleFrame* workingBuffer)
 		const double ticks = static_cast<double>(timeline.ticks()) + (framesPerTick > 0.0 ? timeline.frameOffset() / framesPerTick : 0.0);
 		m_plugin->setTransport(static_cast<double>(song->getTempo()), song->isPlaying() || song->isExporting(),
 			ticks / (DefaultTicksPerBar / 4.0), timeSig.getNumerator(), timeSig.getDenominator());
+		// Per-note pitch bend from the piano roll -> VST3 tuning note expression (see playNote()).
+		for (int key = 0; key <= MidiMaxKey; ++key)
+		{
+			const float bend = m_pendingBend[key].load(std::memory_order_relaxed);
+			if (bend != m_sentBend[key])
+			{
+				m_sentBend[key] = bend;
+				m_plugin->setNoteTuning(key, bend);
+			}
+		}
 		m_plugin->processAudio(nullptr, out, frames);
 	}
 
 	m_pluginMutex.unlock();
+}
+
+void PrestigeInstrument::playNote(NotePlayHandle* n, SampleFrame* workingBuffer)
+{
+	Q_UNUSED(workingBuffer)
+
+	// Audio thread, once per period for every sounding note (release included), before play():
+	// InstrumentPlayHandle finishes the track NotePlayHandles first. Takes no lock: it only stores
+	// this note bend into an atomic slot that play() forwards. The slot is the key the plugin
+	// received (same mapping as InstrumentTrack::processOutEvent), which is also its noteId.
+	const int key = instrumentTrack()->masterKey(n->midiKey());
+	if (key < 0 || key > MidiMaxKey) { return; }
+	m_pendingBend[key].store(n->currentDetuning(), std::memory_order_relaxed);
 }
 
 bool PrestigeInstrument::handleMidiEvent(const MidiEvent& event, const TimePos& time, f_cnt_t offset)
@@ -163,6 +188,12 @@ bool PrestigeInstrument::handleMidiEvent(const MidiEvent& event, const TimePos& 
 		// Vst3PluginInstance::queueMidiEvent() does the MidiEvent -> VST3
 		// Event conversion internally (Vst3EventList, Phase 1) — nothing
 		// to translate here.
+		if (event.type() == MidiNoteOn && event.velocity() > 0 && event.key() >= 0 && event.key() <= MidiMaxKey)
+		{
+			// The NoteOn carries tuning 0; playNote() republishes the real bend right after.
+			m_sentBend[event.key()] = 0.0f;
+			m_pendingBend[event.key()].store(0.0f, std::memory_order_relaxed);
+		}
 		m_plugin->queueMidiEvent(event, static_cast<int>(offset));
 	}
 	return true;

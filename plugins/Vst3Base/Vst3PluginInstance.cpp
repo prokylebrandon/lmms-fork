@@ -1162,6 +1162,17 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     }
 
     // ---- De-interleave input (L R L R …) → planar (L… R…) ----
+    // ---- Per-note tuning (piano-roll pitch bend): one note-expression event per changed note ----
+    // Placed after the note events, at the last event offset, so a bend never precedes its NoteOn.
+    const Steinberg::int32 tuningOffset = eventList.lastSampleOffset();
+    for (int noteId = 0; noteId <= MidiMaxKey; ++noteId)
+    {
+        if (m_noteTuningDirty[noteId].exchange(false, std::memory_order_acquire))
+        {
+            eventList.addNoteTuning(noteId, m_noteTuning[noteId].load(std::memory_order_relaxed), tuningOffset);
+        }
+    }
+
     const std::size_t nf = static_cast<std::size_t>(numFrames);
     const std::size_t inCh  = static_cast<std::size_t>(m_numInputChannels);
     const std::size_t outCh = static_cast<std::size_t>(m_numOutputChannels);
@@ -1361,6 +1372,14 @@ void Vst3PluginInstance::flushActiveNotes()
     std::vector<float> silence(static_cast<std::size_t>(m_blockSize) * 2, 0.0f);
     std::vector<float> discard(static_cast<std::size_t>(m_blockSize) * 2, 0.0f);
     processAudio(m_hasInputBus ? silence.data() : nullptr, discard.data(), m_blockSize);
+}
+
+void Vst3PluginInstance::setNoteTuning(int noteId, float semitones)
+{
+    if (noteId < 0 || noteId > MidiMaxKey) { return; }
+    // Value first, flag second: processAudio() consumes the flag, then reads the value.
+    m_noteTuning[noteId].store(semitones, std::memory_order_relaxed);
+    m_noteTuningDirty[noteId].store(true, std::memory_order_release);
 }
 
 void Vst3PluginInstance::clearMidiQueue()
