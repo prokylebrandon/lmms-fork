@@ -2,8 +2,8 @@
 name: build
 'on': [push, pull_request]
 concurrency:
-  group: ${{ github.workflow }}-${{ github.run_id }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   linux-x86_64:
     name: linux-x86_64
@@ -24,7 +24,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+      - name: Check out submodules (shallow)
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 8 \
+            || git submodule update --init --recursive --jobs 8
       - name: Set up environment
         run: |
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)" | tee -a "$GITHUB_ENV"
@@ -52,7 +57,8 @@ jobs:
           sudo apt-get install -y --install-recommends \
             $(xargs < .github/workflows/deps-ubuntu-24.04-fltk.txt)
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
+        id: ccache
         with:
           key: ccache-${{ github.job }}-${{ github.ref }}-${{ github.run_id }}
           restore-keys: |
@@ -62,7 +68,9 @@ jobs:
       - name: Configure fltk
         run: |
           cmake -S fltk -B fltk/build -DFLTK_BUILD_SHARED_LIBS=ON -DFLTK_BACKEND_WAYLAND=ON \
-            -DFLTK_USE_LIBDECOR_GTK=OFF -DFLTK_BUILD_TEST=OFF -DFLTK_BUILD_GL=OFF
+            -DFLTK_USE_LIBDECOR_GTK=OFF -DFLTK_BUILD_TEST=OFF -DFLTK_BUILD_GL=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Install fltk
         run: |
           cmake --build fltk/build
@@ -89,6 +97,7 @@ jobs:
           archive: false
           path: build/lmms-*.AppImage
       - name: Trim ccache and print statistics
+        if: ${{ always() }}
         run: |
           ccache --cleanup
           echo "[ccache config]"
@@ -97,6 +106,12 @@ jobs:
           ccache --show-stats
         env:
           CCACHE_MAXSIZE: 500M
+      - name: Save ccache data
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+          path: ~/.cache/ccache
   linux-arm64:
     name: linux-arm64
     runs-on: ubuntu-24.04-arm
@@ -117,7 +132,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+      - name: Check out submodules (shallow)
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 8 \
+            || git submodule update --init --recursive --jobs 8
       - name: Set up environment
         run: |
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)" | tee -a "$GITHUB_ENV"
@@ -136,7 +156,8 @@ jobs:
           sudo apt-get install -y --install-recommends \
             $(xargs < .github/workflows/deps-ubuntu-24.04-fltk.txt)
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
+        id: ccache
         with:
           key: ccache-${{ github.job }}-${{ github.ref }}-${{ github.run_id }}
           restore-keys: |
@@ -146,7 +167,9 @@ jobs:
       - name: Configure fltk
         run: |
           cmake -S fltk -B fltk/build -DFLTK_BUILD_SHARED_LIBS=ON -DFLTK_BACKEND_WAYLAND=ON \
-            -DFLTK_USE_LIBDECOR_GTK=OFF -DFLTK_BUILD_TEST=OFF -DFLTK_BUILD_GL=OFF
+            -DFLTK_USE_LIBDECOR_GTK=OFF -DFLTK_BUILD_TEST=OFF -DFLTK_BUILD_GL=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Install fltk
         run: |
           cmake --build fltk/build
@@ -172,6 +195,7 @@ jobs:
           archive: false
           path: build/lmms-*.AppImage
       - name: Trim ccache and print statistics
+        if: ${{ always() }}
         run: |
           ccache --cleanup
           echo "[ccache config]"
@@ -180,6 +204,12 @@ jobs:
           ccache --show-stats
         env:
           CCACHE_MAXSIZE: 500M
+      - name: Save ccache data
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+          path: ~/.cache/ccache
   macos:
     strategy:
       fail-fast: false
@@ -212,7 +242,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+      - name: Check out submodules (shallow)
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 8 \
+            || git submodule update --init --recursive --jobs 8
       - name: Set up environment
         run: |
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(sysctl -n hw.logicalcpu)" | tee -a "$GITHUB_ENV"
@@ -227,7 +262,8 @@ jobs:
             homebrew-${{ matrix.arch }}-
           path: ~/Library/Caches/Homebrew/downloads
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
+        id: ccache
         with:
           key: "ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.ref }}\
             -${{ github.run_id }}"
@@ -268,6 +304,7 @@ jobs:
           archive: false
           path: build/lmms-*.dmg
       - name: Trim ccache and print statistics
+        if: ${{ always() }}
         run: |
           ccache --cleanup
           echo "[ccache config]"
@@ -276,6 +313,12 @@ jobs:
           ccache --show-stats --verbose
         env:
           CCACHE_MAXSIZE: 500MB
+      - name: Save ccache data
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+          path: ~/Library/Caches/ccache
       - name: Save Homebrew download cache
         if: ${{ steps.cache-homebrew.outputs.cache-matched-key != env.key }}
         uses: actions/cache/save@v6
@@ -304,7 +347,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+      - name: Check out submodules (shallow)
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 8 \
+            || git submodule update --init --recursive --jobs 8
       - name: Set up environment
         run: |
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)" | tee -a "$GITHUB_ENV"
@@ -317,7 +365,8 @@ jobs:
             vcpkg-mingw${{ matrix.arch }}-
           path: build/vcpkg_installed
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
+        id: ccache
         with:
           key: "ccache-${{ github.job }}-64-${{ github.ref }}\
             -${{ github.run_id }}"
@@ -353,6 +402,7 @@ jobs:
           archive: false
           path: build/lmms-*.exe
       - name: Trim ccache and print statistics
+        if: ${{ always() }}
         run: |
           ccache --cleanup
           echo "[ccache config]"
@@ -361,6 +411,12 @@ jobs:
           ccache --show-stats
         env:
           CCACHE_MAXSIZE: 500M
+      - name: Save ccache data
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+          path: ~/.cache/ccache
   msvc:
     name: msvc-x64
     runs-on: windows-2025-vs2026
@@ -373,7 +429,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+      - name: Check out submodules (shallow)
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 8 \
+            || git submodule update --init --recursive --jobs 8
       - name: Cache vcpkg dependencies
         id: cache-deps
         uses: actions/cache@v6
@@ -383,7 +444,8 @@ jobs:
             vcpkg-msvc-x86_64-
           path: build\vcpkg_installed
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
+        id: ccache
         with:
           # yamllint disable rule:line-length
           key: "ccache-${{ github.job }}-x64-${{ github.ref }}\
@@ -441,6 +503,7 @@ jobs:
           archive: false
           path: build\lmms-*.exe
       - name: Trim ccache and print statistics
+        if: ${{ always() }}
         run: |
           ccache --cleanup
           echo "[ccache config]"
@@ -449,6 +512,12 @@ jobs:
           ccache --show-stats --verbose
         env:
           CCACHE_MAXSIZE: 500MB
+      - name: Save ccache data
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+          path: ~\AppData\Local\ccache
   msys2:
     name: windows-arm64
     runs-on: windows-11-arm
@@ -470,7 +539,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+      - name: Check out submodules (shallow)
+        shell: bash
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 8 \
+            || git submodule update --init --recursive --jobs 8
       - name: Cache msys2 dependencies
         id: cache-deps
         uses: actions/cache@v6
@@ -487,7 +561,8 @@ jobs:
       - name: Install dependencies
         run: pacman --needed --noconfirm -S - < .github/workflows/deps-msys2-clangarm64.txt
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
+        id: ccache
         with:
           key: ccache-${{ github.job }}-${{ github.ref }}-${{ github.run_id }}
           restore-keys: |
@@ -508,6 +583,7 @@ jobs:
           archive: false
           path: build\lmms-*.exe
       - name: Trim ccache and print statistics
+        if: ${{ always() }}
         run: |
           /clang64/bin/ccache.exe --cleanup
           echo "[ccache config]"
@@ -516,3 +592,9 @@ jobs:
           /clang64/bin/ccache.exe --show-stats --verbose
         env:
           CCACHE_MAXSIZE: 500MB
+      - name: Save ccache data
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+          path: ~\AppData\Local\ccache
