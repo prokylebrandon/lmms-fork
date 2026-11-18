@@ -1062,6 +1062,12 @@ void Song::loadProject( const QString & fileName )
 			createNewProject();
 		}
 		setProjectFileName(m_oldFileName);
+		// A failed load must not leave journalling switched off, or undo/redo
+		// would stay dead for the rest of the session. For the same reason the
+		// loading flag must be cleared: while it is set, setModified() ignores
+		// changes and updateLength() returns early.
+		Engine::projectJournal()->setJournalling( true );
+		m_loadingProject = false;
 		return;
 	}
 

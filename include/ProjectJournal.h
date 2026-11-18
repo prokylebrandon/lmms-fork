@@ -49,8 +49,10 @@ public:
 	ProjectJournal();
 	virtual ~ProjectJournal() = default;
 
-	void undo();
-	void redo();
+	//! Restores the newest restorable undo checkpoint. Returns false if nothing was restored.
+	bool undo();
+	//! Re-applies the newest restorable redo checkpoint. Returns false if nothing was restored.
+	bool redo();
 
 	bool canUndo() const;
 	bool canRedo() const;
@@ -118,6 +120,10 @@ private:
 	} ;
 	using CheckPointStack = QStack<CheckPoint>;
 
+	//! Pops the newest entry of @a from that can still be restored, restores it, and
+	//! pushes the state it replaced onto @a to. Returns false if nothing was restored.
+	bool stepCheckPoints(CheckPointStack& from, CheckPointStack& to);
+
 	JoIdMap m_joIDs;
 	std::set<jo_id_t> m_unregisteredIds;
 
@@ -125,6 +131,7 @@ private:
 	CheckPointStack m_redoCheckPoints;
 
 	bool m_journalling;
+	bool m_restoring = false; //!< true while a checkpoint is being restored (blocks re-entrant undo/redo)
 
 } ;
 

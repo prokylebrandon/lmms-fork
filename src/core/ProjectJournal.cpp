@@ -52,58 +52,133 @@ ProjectJournal::ProjectJournal() :
 
 
 
-void ProjectJournal::undo()
+namespace
 {
-	while( !m_undoCheckPoints.isEmpty() )
+
+//! Disables journalling on a ProjectJournal and restores the previous state on
+//! every exit path (including exceptions), so the flag cannot get stuck off.
+class JournallingSuspender
+{
+public:
+	explicit JournallingSuspender(ProjectJournal& journal)
+		: m_journal(journal)
+		, m_previous(journal.isJournalling())
 	{
-		CheckPoint c = m_undoCheckPoints.pop();
-		JournallingObject *jo = m_joIDs[c.joID];
-
-		if( jo )
-		{
-			DataFile curState( DataFile::Type::JournalData );
-			jo->saveState( curState, curState.content() );
-			m_redoCheckPoints.push( CheckPoint( c.joID, curState ) );
-
-			bool prev = isJournalling();
-			setJournalling( false );
-			jo->restoreState( c.data.content().firstChildElement() );
-			setJournalling( prev );
-			Engine::getSong()->setModified();
-
-			// loading AutomationClip connections correctly
-			if (!c.data.content().elementsByTagName("automationclip").isEmpty())
-			{
-				AutomationClip::resolveAllIDs();
-			}
-			break;
-		}
+		m_journal.setJournalling(false);
 	}
+
+	~JournallingSuspender() { m_journal.setJournalling(m_previous); }
+
+	JournallingSuspender(const JournallingSuspender&) = delete;
+	JournallingSuspender& operator=(const JournallingSuspender&) = delete;
+
+private:
+	ProjectJournal& m_journal;
+	bool m_previous;
+};
+
+//! Sets a bool for the lifetime of the object and restores the old value afterwards.
+class ScopedFlag
+{
+public:
+	ScopedFlag(bool& flag, bool value)
+		: m_flag(flag)
+		, m_previous(flag)
+	{
+		m_flag = value;
+	}
+
+	~ScopedFlag() { m_flag = m_previous; }
+
+	ScopedFlag(const ScopedFlag&) = delete;
+	ScopedFlag& operator=(const ScopedFlag&) = delete;
+
+private:
+	bool& m_flag;
+	bool m_previous;
+};
+
+} // namespace
+
+
+bool ProjectJournal::stepCheckPoints(CheckPointStack& from, CheckPointStack& to)
+{
+	// An undo/redo started while another one is still restoring would corrupt both stacks.
+	if (m_restoring) { return false; }
+
+	// Never rewrite project state while a project is loading or being exported.
+	if (const auto* song = Engine::getSong(); song && (song->isLoadingProject() || song->isExporting()))
+	{
+		return false;
+	}
+
+	while (!from.isEmpty())
+	{
+		CheckPoint c = from.pop();
+
+		// journallingObject() looks up without inserting; operator[] on the id
+		// map would add a null entry for every unknown id.
+		JournallingObject* jo = journallingObject(c.joID);
+		const QDomElement saved = c.data.content().firstChildElement();
+
+		// Entries whose object is gone, or that hold no state, cannot be restored
+		// (restoring an empty element could reset the object to defaults).
+		// Drop them and try the next older entry.
+		if (!jo || saved.isNull()) { continue; }
+
+		// Remember what we are about to overwrite so the opposite action can bring it back.
+		DataFile previousState(DataFile::Type::JournalData);
+		jo->saveState(previousState, previousState.content());
+		const bool canReverse = !previousState.content().firstChildElement().isNull();
+
+		try
+		{
+			const JournallingSuspender suspender(*this);
+			const ScopedFlag restoring(m_restoring, true);
+			jo->restoreState(saved);
+		}
+		catch (...)
+		{
+			// Put the entry back so a failed restore does not lose it. The guards
+			// above have already restored the journalling flag. Do not let an
+			// exception escape into a Qt slot.
+			from.push(c);
+			return false;
+		}
+
+		if (canReverse)
+		{
+			to.push(CheckPoint(c.joID, previousState));
+			if (to.size() > MAX_UNDO_STATES) { to.remove(0, to.size() - MAX_UNDO_STATES); }
+		}
+		else
+		{
+			qWarning("ProjectJournal: could not save the current state before restoring; "
+					 "the opposite action is not available for this step");
+		}
+
+		if (auto* song = Engine::getSong()) { song->setModified(); }
+
+		// Loading AutomationClip connections correctly (needed for undo AND redo)
+		if (!c.data.content().elementsByTagName("automationclip").isEmpty())
+		{
+			AutomationClip::resolveAllIDs();
+		}
+		return true;
+	}
+	return false;
 }
 
 
-
-void ProjectJournal::redo()
+bool ProjectJournal::undo()
 {
-	while( !m_redoCheckPoints.isEmpty() )
-	{
-		CheckPoint c = m_redoCheckPoints.pop();
-		JournallingObject *jo = m_joIDs[c.joID];
+	return stepCheckPoints(m_undoCheckPoints, m_redoCheckPoints);
+}
 
-		if( jo )
-		{
-			DataFile curState( DataFile::Type::JournalData );
-			jo->saveState( curState, curState.content() );
-			m_undoCheckPoints.push( CheckPoint( c.joID, curState ) );
 
-			bool prev = isJournalling();
-			setJournalling( false );
-			jo->restoreState( c.data.content().firstChildElement() );
-			setJournalling( prev );
-			Engine::getSong()->setModified();
-			break;
-		}
-	}
+bool ProjectJournal::redo()
+{
+	return stepCheckPoints(m_redoCheckPoints, m_undoCheckPoints);
 }
 
 bool ProjectJournal::canUndo() const
@@ -120,21 +195,23 @@ bool ProjectJournal::canRedo() const
 
 void ProjectJournal::addJournalCheckPoint( JournallingObject *jo )
 {
-	if( isJournalling() )
+	if (!jo || !isJournalling() || m_restoring) { return; }
+
+	DataFile dataFile( DataFile::Type::JournalData );
+	jo->saveState( dataFile, dataFile.content() );
+
+	// saveState() produces nothing when the object has journalling disabled. An
+	// empty checkpoint would make a later undo press a silent no-op, and clearing
+	// the redo stack for it would throw away valid redo steps.
+	if (dataFile.content().firstChildElement().isNull()) { return; }
+
+	m_redoCheckPoints.clear();
+	m_undoCheckPoints.push( CheckPoint( jo->id(), dataFile ) );
+	if( m_undoCheckPoints.size() > MAX_UNDO_STATES )
 	{
-		m_redoCheckPoints.clear();
-
-		DataFile dataFile( DataFile::Type::JournalData );
-		jo->saveState( dataFile, dataFile.content() );
-
-		m_undoCheckPoints.push( CheckPoint( jo->id(), dataFile ) );
-		if( m_undoCheckPoints.size() > MAX_UNDO_STATES )
-		{
-			m_undoCheckPoints.remove( 0, m_undoCheckPoints.size() - MAX_UNDO_STATES );
-		}
+		m_undoCheckPoints.remove( 0, m_undoCheckPoints.size() - MAX_UNDO_STATES );
 	}
 }
-
 
 jo_id_t ProjectJournal::allocID(JournallingObject* obj)
 {

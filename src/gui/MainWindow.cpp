@@ -342,6 +342,15 @@ void MainWindow::finalize()
 		this, SLOT(showSettingsDialog()));
 
 	connect(edit_menu, SIGNAL(aboutToShow()), this, SLOT(updateUndoRedoButtons()));
+	// Greying out an action also disables its shortcut. updateUndoRedoButtons() runs
+	// when the menu opens, so re-enable both actions when it closes; otherwise
+	// Ctrl+Z / Ctrl+Y stay dead until the menu is opened again. undo()/redo() are
+	// harmless no-ops when their stack is empty.
+	connect(edit_menu, &QMenu::aboutToHide, this, [this]
+	{
+		m_undoAction->setEnabled(true);
+		m_redoAction->setEnabled(true);
+	});
 
 	m_viewMenu = new QMenu( this );
 	menuBar()->addMenu( m_viewMenu )->setText( tr( "&View" ) );
