@@ -358,6 +358,15 @@ public:
     void pollOutputParameters();
 
     /**
+     * Number of audio blocks for which the plugin's process() returned
+     * something other than kResultOk. Each such block was output as silence.
+     */
+    std::uint64_t processErrorCount() const noexcept
+    {
+        return m_processErrors.load(std::memory_order_relaxed);
+    }
+
+    /**
      * Return a formatted display string for a parameter value.
      * E.g. "440.0 Hz" or "0.5 dB".
      */
@@ -577,6 +586,11 @@ private:
     // Plugin-reported parameter values, written by processAudio() on the
     // audio thread and drained by pollOutputParameters() on the GUI thread.
     Vst3OutputParamSlots m_outputParamSlots;
+
+    // process() failures counted on the audio thread, reported (logged) from
+    // the GUI thread in pollOutputParameters(); logging allocates.
+    std::atomic<std::uint64_t> m_processErrors{0};
+    std::uint64_t              m_reportedProcessErrors = 0;
     std::atomic<std::uint64_t> m_droppedMidiEvents{0};
 
     // --- Active-note tracking (updated from queueMidiEvent(), any thread) -

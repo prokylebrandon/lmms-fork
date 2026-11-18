@@ -26,6 +26,7 @@
 #include "Vst3MemoryStream.h"
 #include "Vst3EventList.h"
 #include "Vst3ParameterChanges.h"
+#include "Vst3ResultLog.h"
 #include "MidiEvent.h"
 
 // VST3 SDK headers
@@ -609,9 +610,9 @@ bool Vst3PluginInstance::initController(QString& error)
         installComponentHandler();
 
         Vst3MemoryStream emptyStream;
-        comp->getState(&emptyStream);
+        Vst3WarnIfFailed(comp->getState(&emptyStream), "IComponent::getState()");
         emptyStream.seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
-        ctrl->setComponentState(&emptyStream);
+        Vst3WarnIfFailed(ctrl->setComponentState(&emptyStream), "IEditController::setComponentState()");
         return true;
     }
 
@@ -655,7 +656,7 @@ bool Vst3PluginInstance::initController(QString& error)
     if (comp->getState(&stateStream) == Steinberg::kResultOk)
     {
         stateStream.seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
-        ctrl->setComponentState(&stateStream);
+        Vst3WarnIfFailed(ctrl->setComponentState(&stateStream), "IEditController::setComponentState()");
     }
 
     return true;
@@ -705,8 +706,8 @@ bool Vst3PluginInstance::connectComponentController(QString& error)
 
     if (compConn && ctrlConn)
     {
-        compConn->connect(ctrlConn);
-        ctrlConn->connect(compConn);
+        Vst3WarnIfFailed(compConn->connect(ctrlConn), "IConnectionPoint::connect(component to controller)");
+        Vst3WarnIfFailed(ctrlConn->connect(compConn), "IConnectionPoint::connect(controller to component)");
         m_compConnection = compConn;
         m_ctrlConnection = ctrlConn;
     }
@@ -758,7 +759,7 @@ bool Vst3PluginInstance::initAudioSetup(double sampleRate, int blockSize, QStrin
     const int numEventInputs = comp->getBusCount(Steinberg::Vst::kEvent,
                                                    Steinberg::Vst::kInput);
     if (numEventInputs > 0)
-        comp->activateBus(Steinberg::Vst::kEvent, Steinberg::Vst::kInput, 0, true);
+        Vst3WarnIfFailed(comp->activateBus(Steinberg::Vst::kEvent, Steinberg::Vst::kInput, 0, true), "IComponent::activateBus(event input)");
 
     if (!check(comp->setActive(true), "IComponent::setActive(true)", error))
         return false;
@@ -853,8 +854,8 @@ Vst3PluginInstance::~Vst3PluginInstance()
     {
         auto* cc = cast<Steinberg::Vst::IConnectionPoint>(m_compConnection);
         auto* ck = cast<Steinberg::Vst::IConnectionPoint>(m_ctrlConnection);
-        cc->disconnect(ck);
-        ck->disconnect(cc);
+        (void)cc->disconnect(ck); // teardown: nothing useful can be done if this fails
+        (void)ck->disconnect(cc); // teardown: nothing useful can be done if this fails
     }
     safeRelease<Steinberg::Vst::IConnectionPoint>(m_compConnection);
     safeRelease<Steinberg::Vst::IConnectionPoint>(m_ctrlConnection);
@@ -869,7 +870,7 @@ Vst3PluginInstance::~Vst3PluginInstance()
 
         // Stop the controller calling back into a host object that is about
         // to be destroyed.
-        ctrl->setComponentHandler(nullptr);
+        (void)ctrl->setComponentHandler(nullptr); // teardown: nothing useful can be done if this fails
 
         Steinberg::FUnknown* compUnk = nullptr;
         Steinberg::FUnknown* ctrlUnk = nullptr;
@@ -882,7 +883,7 @@ Vst3PluginInstance::~Vst3PluginInstance()
         if (ctrlUnk) ctrlUnk->release();
 
         if (!sameObj)
-            ctrl->terminate();
+            (void)ctrl->terminate(); // teardown: nothing useful can be done if this fails
         safeRelease<Steinberg::Vst::IEditController>(m_controller);
     }
 
@@ -949,7 +950,7 @@ void Vst3PluginInstance::stopProcessing()
     if (!m_processing) return;
 
     auto* proc = cast<Steinberg::Vst::IAudioProcessor>(m_audioProcessor);
-    proc->setProcessing(false);
+    (void)proc->setProcessing(false); // teardown: nothing useful can be done if this fails (kNotImplemented is valid)
     m_processing = false;
 }
 
@@ -1047,13 +1048,22 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     pd.outputEvents           = nullptr;
     pd.processContext         = nullptr; // transport context not wired in Phase 1
 
-    proc->process(pd);
+    const Steinberg::tresult processResult = proc->process(pd);
+    if (processResult != Steinberg::kResultOk)
+    {
+        // The VST3 contract leaves the output buffers undefined when
+        // process() fails, so play silence rather than whatever is in them.
+        // Counted here, logged later from the GUI thread (logging allocates).
+        m_processErrors.fetch_add(1, std::memory_order_relaxed);
+        std::fill(outL, outL + nf, 0.0f);
+        std::fill(outR, outR + nf, 0.0f);
+    }
 
     // ---- Hand plugin-reported parameter values (meters etc.) to the GUI ----
     // Allocation-free and lock-free: only atomic stores into
     // m_outputParamSlots. The GUI thread applies them in
     // pollOutputParameters().
-    for (Steinberg::int32 i = 0, n = outParamChanges.getParameterCount(); i < n; ++i)
+    for (Steinberg::int32 i = 0, n = (processResult == Steinberg::kResultOk) ? outParamChanges.getParameterCount() : 0; i < n; ++i)
     {
         auto* q = outParamChanges.getParameterData(i);
         const Steinberg::int32 points = q ? q->getPointCount() : 0;
@@ -1226,6 +1236,15 @@ void Vst3PluginInstance::queueParameterChange(Vst3ParamID id, double normalisedV
 
 void Vst3PluginInstance::pollOutputParameters()
 {
+    // Report audio-thread process() failures (counted, not logged, there).
+    const std::uint64_t processErrors = m_processErrors.load(std::memory_order_relaxed);
+    if (processErrors != m_reportedProcessErrors)
+    {
+        qWarning("Vst3PluginInstance: IAudioProcessor::process() failed; %llu block(s) output as silence so far",
+                 static_cast<unsigned long long>(processErrors));
+        m_reportedProcessErrors = processErrors;
+    }
+
     // GUI thread. The plugin is the origin of these values, so the model is
     // updated through the edited-parameter callback (which must not write back
     // into the plugin) and nothing is queued for the processor.
@@ -1237,7 +1256,7 @@ void Vst3PluginInstance::pollOutputParameters()
         {
             // Moves the controller's parameter, which is what the plugin's own
             // editor reads its meters from.
-            ctrl->setParamNormalized(static_cast<Steinberg::Vst::ParamID>(id), value);
+            (void)ctrl->setParamNormalized(static_cast<Steinberg::Vst::ParamID>(id), value); // an id the controller does not know is not an error worth reporting
         }
         if (m_paramEditedCb)
         {
@@ -1382,7 +1401,7 @@ bool Vst3PluginInstance::createEditor(int*                widthOut,
     // The frame must be installed before attached() so the plugin can request
     // resizes during attach.
     auto* frame = new Vst3PlugFrameImpl(this); // refcount 1: owned by us
-    view->setFrame(frame);
+    Vst3WarnIfFailed(view->setFrame(frame), "IPlugView::setFrame()");
 
     m_plugView         = view;
     m_plugFrame        = frame;
@@ -1432,10 +1451,10 @@ void Vst3PluginInstance::closeEditor()
     // Order matters: detach from the native parent, drop the frame, release.
     if (m_editorAttached)
     {
-        view->removed();
+        (void)view->removed(); // teardown: nothing useful can be done if this fails
         m_editorAttached = false;
     }
-    view->setFrame(nullptr);
+    (void)view->setFrame(nullptr); // teardown: nothing useful can be done if this fails
     view->release();
 
     if (m_plugFrame)
@@ -1678,7 +1697,14 @@ QByteArray Vst3PluginInstance::saveComponentState() const
 
     auto* comp = cast<Steinberg::Vst::IComponent>(m_component);
     Vst3MemoryStream stream;
-    comp->getState(&stream);
+    const Steinberg::tresult getResult = comp->getState(&stream);
+    if (getResult != Steinberg::kResultOk)
+    {
+        // A failed (possibly partial) state must not be written into the
+        // project as if it were the plugin's real state.
+        Vst3WarnIfFailed(getResult, "IComponent::getState() while saving");
+        return {};
+    }
     return stream.buffer();
 }
 
@@ -1693,7 +1719,12 @@ QByteArray Vst3PluginInstance::saveControllerState() const
 
     auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
     Vst3MemoryStream stream;
-    ctrl->getState(&stream);
+    const Steinberg::tresult getResult = ctrl->getState(&stream);
+    if (getResult != Steinberg::kResultOk)
+    {
+        Vst3WarnIfFailed(getResult, "IEditController::getState() while saving");
+        return {};
+    }
     return stream.buffer();
 }
 
