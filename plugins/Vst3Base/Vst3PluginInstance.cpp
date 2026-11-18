@@ -932,7 +932,10 @@ bool Vst3PluginInstance::startProcessing(QString* errorOut)
 
     auto* proc = cast<Steinberg::Vst::IAudioProcessor>(m_audioProcessor);
     QString err;
-    if (!check(proc->setProcessing(true), "IAudioProcessor::setProcessing(true)", err))
+    // kNotImplemented means "nothing to prepare" and is valid per the VST3 spec.
+    const Steinberg::tresult procResult = proc->setProcessing(true);
+    if (procResult != Steinberg::kNotImplemented
+        && !check(procResult, "IAudioProcessor::setProcessing(true)", err))
     {
         if (errorOut) *errorOut = err;
         return false;
