@@ -139,7 +139,7 @@ void Vst3ParameterModel::saveSettings(QDomDocument& doc, QDomElement& parameters
 	parametersElement.appendChild(paramElement);
 }
 
-void Vst3ParameterModel::loadSettings(const QDomElement& paramElement)
+void Vst3ParameterModel::loadSettings(const QDomElement& paramElement, bool applyValueToPlugin)
 {
 	// AutomatableModel::loadSettings() always ends by calling setValue()
 	// on the saved (or automation-clip-derived) value -- there is no
@@ -164,7 +164,7 @@ void Vst3ParameterModel::loadSettings(const QDomElement& paramElement)
 	// An automation clip on a program-change parameter still drives the
 	// plugin normally during playback -- only this one-time load-time
 	// snap is skipped.
-	if (m_info.isProgramChange)
+	if (m_info.isProgramChange || !applyValueToPlugin)
 	{
 		m_settingFromPlugin = true;
 		m_valueModel.loadSettings(paramElement, "value");

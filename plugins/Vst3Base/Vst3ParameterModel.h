@@ -204,7 +204,7 @@ public:
 	 * parameter still drives the plugin during playback as normal; only
 	 * the one-time "snap to last saved value" on project load is skipped.
 	 */
-	void loadSettings(const QDomElement& paramElement);
+	void loadSettings(const QDomElement& paramElement, bool applyValueToPlugin = true);
 
 private slots:
 	void onModelChanged();
