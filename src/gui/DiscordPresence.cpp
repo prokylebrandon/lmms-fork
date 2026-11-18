@@ -394,6 +394,11 @@ void DiscordPresence::flush()
 
 	QJsonObject timestamps;
 	timestamps.insert(QStringLiteral("start"), m_startSeconds);
+	QJsonObject assets;
+	assets.insert(QStringLiteral("large_image"), QStringLiteral("lmms"));
+	assets.insert(QStringLiteral("large_text"), QStringLiteral("LMMS"));
+	activity.insert(QStringLiteral("assets"), assets);
+
 	activity.insert(QStringLiteral("timestamps"), timestamps);
 
 	m_client->setActivity(activity);
