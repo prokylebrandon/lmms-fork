@@ -29,6 +29,7 @@
 #include <vector>
 
 #include <QString>
+#include <QTimer>
 
 #include "EffectControls.h"
 #include "Vst3ParameterModel.h"
@@ -141,6 +142,15 @@ private:
 		//! Re-reads every model from the plugin; never writes back to it.
 		void onPluginParametersChanged();
 
+        //! Timer slot: applies values the plugin reported while processing
+        //! (level meters etc.). GUI thread.
+        void pollOutputParameters();
+
+        //! The bodies of buildParameterModels()/teardownParameterModels();
+        //! the public functions wrap them to start/stop the poll timer.
+        void buildParameterModelsImpl();
+        void teardownParameterModelsImpl();
+
 	//! Task 4: shared by saveSettings() (the plugin-owned <state> node
 	//! plus the host-side <parameters> automation block) and
 	//! loadSettings() (restoring both, in that order, then reconciling).
@@ -167,6 +177,9 @@ private:
 	//! kept only when the plugin is (or becomes) unavailable. Empty
 	//! otherwise.
 	QString m_retainedXml;
+
+        //! Drives pollOutputParameters(). Created in buildParameterModels().
+        QTimer* m_outputTimer = nullptr;
 
 signals:
 	//! See teardownParameterModels()'s doc comment. Emitted before any

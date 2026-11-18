@@ -28,6 +28,7 @@
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 #include "Vst3Types.h"
 
+#include <array>
 #include <vector>
 
 namespace lmms
@@ -160,6 +161,125 @@ private:
     // Store by value to avoid per-block heap allocation
     std::vector<Vst3SingleParamQueue>          m_queues;
     std::vector<Steinberg::Vst::IParamValueQueue*> m_queuePtrs;
+};
+
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Single-point IParamValueQueue the PLUGIN writes into (meters etc.).
+ *
+ * Only the most recent point is kept: a meter reading is a level, and the
+ * newest one is the one worth showing.
+ */
+class Vst3OutParamQueue final : public Steinberg::Vst::IParamValueQueue
+{
+public:
+    void reset(Vst3ParamID id)
+    {
+        m_id = id;
+        m_hasPoint = false;
+        m_sampleOffset = 0;
+        m_value = 0.0;
+    }
+
+    Steinberg::Vst::ParamID PLUGIN_API getParameterId() override
+    {
+        return static_cast<Steinberg::Vst::ParamID>(m_id);
+    }
+
+    Steinberg::int32 PLUGIN_API getPointCount() override { return m_hasPoint ? 1 : 0; }
+
+    Steinberg::tresult PLUGIN_API getPoint(
+        Steinberg::int32            index,
+        Steinberg::int32&           sampleOffset,
+        Steinberg::Vst::ParamValue& value) override
+    {
+        if (index != 0 || !m_hasPoint) return Steinberg::kInvalidArgument;
+        sampleOffset = m_sampleOffset;
+        value        = m_value;
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::tresult PLUGIN_API addPoint(
+        Steinberg::int32           sampleOffset,
+        Steinberg::Vst::ParamValue value,
+        Steinberg::int32&          index) override
+    {
+        m_sampleOffset = sampleOffset;
+        m_value        = value;
+        m_hasPoint     = true;
+        index          = 0;
+        return Steinberg::kResultOk;
+    }
+
+    Steinberg::uint32  PLUGIN_API addRef()  override { return 1; }
+    Steinberg::uint32  PLUGIN_API release() override { return 1; }
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID, void**) override
+    {
+        return Steinberg::kNoInterface;
+    }
+
+private:
+    Vst3ParamID m_id = 0;
+    bool m_hasPoint = false;
+    Steinberg::int32 m_sampleOffset = 0;
+    double m_value = 0.0;
+};
+
+/**
+ * @brief IParameterChanges the plugin fills in during process()
+ *        (ProcessData::outputParameterChanges).
+ *
+ * Fixed capacity, no heap allocation, so it is safe to build on the stack on
+ * the audio thread. Asking for an id that already has a queue returns that
+ * queue (as the SDK's own implementation does) instead of adding a second.
+ * Requests beyond kMaxChanges distinct parameters return nullptr, which the
+ * VST3 contract allows.
+ */
+class Vst3OutputParamChanges final : public Steinberg::Vst::IParameterChanges
+{
+public:
+    static constexpr int kMaxChanges = 128;
+
+    Steinberg::int32 PLUGIN_API getParameterCount() override { return m_count; }
+
+    Steinberg::Vst::IParamValueQueue* PLUGIN_API
+    getParameterData(Steinberg::int32 index) override
+    {
+        if (index < 0 || index >= m_count) return nullptr;
+        return &m_queues[static_cast<std::size_t>(index)];
+    }
+
+    Steinberg::Vst::IParamValueQueue* PLUGIN_API
+    addParameterData(const Steinberg::Vst::ParamID& id,
+                     Steinberg::int32&               index) override
+    {
+        for (Steinberg::int32 i = 0; i < m_count; ++i)
+        {
+            auto& q = m_queues[static_cast<std::size_t>(i)];
+            if (q.getParameterId() == id)
+            {
+                index = i;
+                return &q;
+            }
+        }
+        if (m_count >= kMaxChanges) return nullptr;
+        auto& q = m_queues[static_cast<std::size_t>(m_count)];
+        q.reset(static_cast<Vst3ParamID>(id));
+        index = m_count++;
+        return &q;
+    }
+
+    Steinberg::uint32  PLUGIN_API addRef()  override { return 1; }
+    Steinberg::uint32  PLUGIN_API release() override { return 1; }
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID, void**) override
+    {
+        return Steinberg::kNoInterface;
+    }
+
+private:
+    std::array<Vst3OutParamQueue, kMaxChanges> m_queues;
+    Steinberg::int32 m_count = 0;
 };
 
 } // namespace lmms

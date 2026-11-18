@@ -45,6 +45,33 @@ Vst3EffectControls::Vst3EffectControls(Vst3Effect* effect) :
 
 void Vst3EffectControls::buildParameterModels()
 {
+        buildParameterModelsImpl();
+
+        // Meters and other plugin-to-host values arrive on the audio thread;
+        // apply them on the GUI thread about 30 times a second.
+        if (m_effect && m_effect->pluginInstance())
+        {
+                if (!m_outputTimer)
+                {
+                        m_outputTimer = new QTimer(this);
+                        m_outputTimer->setInterval(33);
+                        connect(m_outputTimer, &QTimer::timeout, this, &Vst3EffectControls::pollOutputParameters);
+                }
+                m_outputTimer->start();
+        }
+}
+
+void Vst3EffectControls::pollOutputParameters()
+{
+        Vst3PluginInstance* plugin = m_effect ? m_effect->pluginInstance() : nullptr;
+        if (plugin)
+        {
+                plugin->pollOutputParameters();
+        }
+}
+
+void Vst3EffectControls::buildParameterModelsImpl()
+{
 	Q_ASSERT(m_parameterModels.empty());
 	Vst3PluginInstance* plugin = m_effect->pluginInstance();
 	if (!plugin)
@@ -74,6 +101,16 @@ void Vst3EffectControls::buildParameterModels()
 }
 
 void Vst3EffectControls::teardownParameterModels()
+{
+        // Stop polling before anything is detached or destroyed.
+        if (m_outputTimer)
+        {
+                m_outputTimer->stop();
+        }
+        teardownParameterModelsImpl();
+}
+
+void Vst3EffectControls::teardownParameterModelsImpl()
 {
 	// See this method's doc comment in the header: emitted first, before
 	// anything below detaches or destroys a model, so a still-open

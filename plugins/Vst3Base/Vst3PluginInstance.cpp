@@ -1032,6 +1032,7 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     outputBusBuffers.silenceFlags       = 0;
 
     // ---- Assemble ProcessData ----
+    Vst3OutputParamChanges outParamChanges; // the plugin writes meter etc. values here
     Steinberg::Vst::ProcessData pd{};
     pd.processMode         = Steinberg::Vst::kRealtime;
     pd.symbolicSampleSize  = Steinberg::Vst::kSample32;
@@ -1041,12 +1042,30 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     pd.inputs              = m_hasInputBus ? &inputBusBuffers : nullptr;
     pd.outputs             = &outputBusBuffers;
     pd.inputParameterChanges  = &paramChanges;
-    pd.outputParameterChanges = nullptr; // we don't consume output param changes
+    pd.outputParameterChanges = &outParamChanges; // plugin -> host values (meters)
     pd.inputEvents            = &eventList;
     pd.outputEvents           = nullptr;
     pd.processContext         = nullptr; // transport context not wired in Phase 1
 
     proc->process(pd);
+
+    // ---- Hand plugin-reported parameter values (meters etc.) to the GUI ----
+    // Allocation-free and lock-free: only atomic stores into
+    // m_outputParamSlots. The GUI thread applies them in
+    // pollOutputParameters().
+    for (Steinberg::int32 i = 0, n = outParamChanges.getParameterCount(); i < n; ++i)
+    {
+        auto* q = outParamChanges.getParameterData(i);
+        const Steinberg::int32 points = q ? q->getPointCount() : 0;
+        if (points <= 0) { continue; }
+
+        Steinberg::int32 sampleOffset = 0;
+        Steinberg::Vst::ParamValue value = 0.0;
+        if (q->getPoint(points - 1, sampleOffset, value) == Steinberg::kResultOk)
+        {
+            m_outputParamSlots.publish(static_cast<Vst3ParamID>(q->getParameterId()), value);
+        }
+    }
 
     // ---- Re-interleave planar output → interleaved (L R L R …) ----
     for (std::size_t i = 0; i < nf; ++i)
@@ -1203,6 +1222,28 @@ void Vst3PluginInstance::queueParameterChange(Vst3ParamID id, double normalisedV
                                   normalisedValue);
     }
     queueForProcessor(id, normalisedValue);
+}
+
+void Vst3PluginInstance::pollOutputParameters()
+{
+    // GUI thread. The plugin is the origin of these values, so the model is
+    // updated through the edited-parameter callback (which must not write back
+    // into the plugin) and nothing is queued for the processor.
+    auto* ctrl = m_controller ? cast<Steinberg::Vst::IEditController>(m_controller) : nullptr;
+
+    m_outputParamSlots.drain([&](Vst3ParamID id, double value)
+    {
+        if (ctrl)
+        {
+            // Moves the controller's parameter, which is what the plugin's own
+            // editor reads its meters from.
+            ctrl->setParamNormalized(static_cast<Steinberg::Vst::ParamID>(id), value);
+        }
+        if (m_paramEditedCb)
+        {
+            m_paramEditedCb(id, value);
+        }
+    });
 }
 
 void Vst3PluginInstance::setParameterEditedCallback(ParameterEditedCallback cb)

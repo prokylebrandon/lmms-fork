@@ -27,6 +27,7 @@
 
 #include "Vst3Types.h"
 #include "Vst3Parameter.h"
+#include "Vst3OutputParamSlots.h"
 
 #include <QString>
 #include <QByteArray>
@@ -349,6 +350,14 @@ public:
     void setParametersChangedCallback(ParametersChangedCallback cb);
 
     /**
+     * Apply values the plugin itself reported during process() (level meters
+     * and other plugin-to-host parameter outputs) to its IEditController and,
+     * through the edited-parameter callback, to the host-side models.
+     * Call periodically from the GUI thread; cheap when nothing changed.
+     */
+    void pollOutputParameters();
+
+    /**
      * Return a formatted display string for a parameter value.
      * E.g. "440.0 Hz" or "0.5 dB".
      */
@@ -564,6 +573,10 @@ private:
     void* m_midiQueue  = nullptr; // Vst3LockFreeQueue<PendingMidiEvent>*, owned
 
     std::atomic<std::uint64_t> m_droppedParamChanges{0};
+
+    // Plugin-reported parameter values, written by processAudio() on the
+    // audio thread and drained by pollOutputParameters() on the GUI thread.
+    Vst3OutputParamSlots m_outputParamSlots;
     std::atomic<std::uint64_t> m_droppedMidiEvents{0};
 
     // --- Active-note tracking (updated from queueMidiEvent(), any thread) -
