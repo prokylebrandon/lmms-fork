@@ -25,6 +25,8 @@
 #include "Vst3EffectControls.h"
 
 #include <QDomDocument>
+#include <cmath>
+#include <unordered_map>
 #include <QDomElement>
 #include <QTextStream>
 
@@ -277,6 +279,13 @@ void Vst3EffectControls::applySavedElement(const QDomElement& element)
 	Q_ASSERT(plugin != nullptr);
 
 	// Plugin-owned state.
+	// Value of every parameter BEFORE the plugin's own state is restored, so we can tell
+	// afterwards which parameters the state blob actually set.
+	std::unordered_map<Vst3ParamID, double> preRestoreValues;
+	for (auto& m : m_parameterModels)
+	{
+		if (const auto v = plugin->getParameterNormalized(m->id())) { preRestoreValues[m->id()] = *v; }
+	}
 	bool stateRestoredOk = false; // true only if the plugin's own state blob restored cleanly
 	const QDomElement stateNode = element.firstChildElement("state");
 	if (!stateNode.isNull())
@@ -368,7 +377,13 @@ void Vst3EffectControls::applySavedElement(const QDomElement& element)
 			{
 				if (model->id() == id)
 				{
-					model->loadSettings(paramElement, !stateRestoredOk);
+					// The blob wins only for a parameter it actually changed. One it left
+				// untouched (or any parameter, if the blob failed) takes the saved value.
+				const auto before = preRestoreValues.find(id);
+				const auto after = plugin->getParameterNormalized(id);
+				const bool blobSetIt = stateRestoredOk && before != preRestoreValues.end() && after
+					&& std::fabs(*after - before->second) > 1e-6;
+				model->loadSettings(paramElement, !blobSetIt);
 					break;
 				}
 			}
