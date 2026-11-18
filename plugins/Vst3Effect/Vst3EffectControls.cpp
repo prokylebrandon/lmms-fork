@@ -247,7 +247,6 @@ void Vst3EffectControls::saveSettings(QDomDocument& doc, QDomElement& parent)
 		const QByteArray state = plugin->saveState();
 		stateNode.appendChild(doc.createTextNode(QString::fromLatin1(state.toBase64())));
 	}
-	qWarning("Vst3Effect diag: saving state, %d base64 chars, format=%s", static_cast<int>(stateNode.text().size()), qPrintable(stateNode.attribute("format")));
 		parent.appendChild(stateNode);
 
 	// --- host-side parameter/automation state ----------------------------
@@ -335,7 +334,6 @@ void Vst3EffectControls::applySavedElement(const QDomElement& element)
 		}
 
 		stateRestoredOk = anyState && restored;
-		qWarning("Vst3Effect diag: state restore anyState=%d restored=%d", anyState ? 1 : 0, restored ? 1 : 0);
 		if (anyState && !restored)
 		{
 			// The plugin stays loaded and usable, at whatever state
