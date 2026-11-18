@@ -1190,7 +1190,7 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     std::fill(m_outputBuf.data(), m_outputBuf.data() + nf * outPlanes, 0.0f);
 
     for (std::size_t p = 0; p < inCh; ++p)  { m_inputPtrs[p]  = m_inputBuf.data()  + p * nf; }
-    for (std::size_t p = 0; p < outCh; ++p) { m_outputPtrs[p] = m_outputBuf.data() + p * nf; }${2}
+    for (std::size_t p = 0; p < outCh; ++p) { m_outputPtrs[p] = m_outputBuf.data() + p * nf; }
     // ---- Assemble VST3 AudioBusBuffers ----
     Steinberg::Vst::AudioBusBuffers inputBusBuffers{};
     inputBusBuffers.numChannels         = static_cast<Steinberg::int32>(inCh);
