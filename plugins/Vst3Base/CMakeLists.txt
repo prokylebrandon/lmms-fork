@@ -62,6 +62,14 @@ elseif(LMMS_BUILD_WIN32)
     list(APPEND VST3SDK_SOURCES
         ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_win32.cpp
         ${VST3SDK_DIR}/public.sdk/source/common/threadchecker_win32.cpp)
+    # libc++ in the MSYS2 clangarm64 env no longer pulls <exception> in
+    # transitively, so std::terminate() in this SDK file fails to compile.
+    # Force-include it for this one file instead of editing the SDK.
+    if(NOT MSVC)
+        set_source_files_properties(
+            ${VST3SDK_DIR}/public.sdk/source/common/threadchecker_win32.cpp
+            PROPERTIES COMPILE_OPTIONS "-include;exception")
+    endif()
 elseif(LMMS_BUILD_APPLE)
     list(APPEND VST3SDK_SOURCES
         ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm)

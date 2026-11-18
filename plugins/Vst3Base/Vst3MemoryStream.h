@@ -80,7 +80,10 @@ public:
         if (bytesRead)
             *bytesRead = toRead;
 
-        return (toRead == numBytes) ? Steinberg::kResultOk : Steinberg::kResultFalse;
+        // bytesRead already reports a short/EOF read, so always return kResultOk.
+        // JUCE-based plugins (e.g. Vital) discard a chunk unless read() returns
+        // kResultTrue, which truncated the final part of a restored preset.
+        return Steinberg::kResultOk;
     }
 
     Steinberg::tresult PLUGIN_API write(void* buffer, Steinberg::int32 numBytes,
