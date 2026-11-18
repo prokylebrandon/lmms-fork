@@ -85,6 +85,7 @@ private slots:
 	void toggleMMPZ(bool enabled);
 	void toggleDisableBackup(bool enabled);
 	void toggleOpenLastProject(bool enabled);
+	void toggleDiscordPresence(bool enabled);
 	void detachBehaviorChanged();
 	void loopMarkerModeChanged();
 	void setLanguage(int lang);
@@ -151,6 +152,9 @@ private:
 	bool m_MMPZ;
 	bool m_disableBackup;
 	bool m_openLastProject;
+	bool m_discordEnabled = false;
+	QLineEdit* m_discordDetailsEdit = nullptr;
+	QLineEdit* m_discordStateEdit = nullptr;
 	QString m_detachBehavior;
 	QComboBox* m_detachBehaviorComboBox;
 	QString m_loopMarkerMode;

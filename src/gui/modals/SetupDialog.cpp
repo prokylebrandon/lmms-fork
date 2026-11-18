@@ -33,9 +33,11 @@
 #include <QScrollArea>
 
 #include "AudioEngine.h"
+#include "DiscordPresence.h"
 #include "embed.h"
 #include "Engine.h"
 #include "FileDialog.h"
+#include "GuiApplication.h"
 #include "MainWindow.h"
 #include "MidiSetupWidget.h"
 #include "ProjectJournal.h"
@@ -309,6 +311,46 @@ SetupDialog::SetupDialog(ConfigTab tab_to_open) :
 		m_openLastProject, SLOT(toggleOpenLastProject(bool)), false);
 
 	generalControlsLayout->addWidget(projectsGroupBox);
+
+	generalControlsLayout->addSpacing(10);
+
+	// Discord Rich Presence.
+	m_discordEnabled = ConfigManager::inst()->value("discord", "enabled", "0").toInt() != 0;
+
+	QGroupBox * discordGroupBox = new QGroupBox(tr("Discord Rich Presence"), generalControls);
+	QVBoxLayout * discordGroupLayout = new QVBoxLayout(discordGroupBox);
+
+	addCheckBox(tr("Show my project in Discord"), discordGroupBox, discordGroupLayout,
+		m_discordEnabled, SLOT(toggleDiscordPresence(bool)), false);
+
+	const auto addDiscordField = [&](const QString& caption, const char* key, const QString& fallback) -> QLineEdit *
+	{
+		discordGroupLayout->addWidget(new QLabel(caption, discordGroupBox));
+		auto edit = new QLineEdit(ConfigManager::inst()->value("discord", key, fallback), discordGroupBox);
+		edit->setMaxLength(256);
+		discordGroupLayout->addWidget(edit);
+		return edit;
+	};
+
+	m_discordDetailsEdit = addDiscordField(tr("First line"), "details", DiscordPresence::defaultDetails());
+	m_discordStateEdit = addDiscordField(tr("Second line"), "state", DiscordPresence::defaultState());
+
+	if (getGUI() && getGUI()->discordPresence())
+	{
+		QStringList legend;
+		for (const auto& entry : getGUI()->discordPresence()->registry().entries())
+		{
+			legend << QStringLiteral("<b>%") + entry.name + QStringLiteral("%</b> - ") + entry.description.toHtmlEscaped();
+		}
+
+		auto legendLabel = new QLabel(tr("Placeholders:") + QStringLiteral("<br>")
+			+ legend.join(QStringLiteral("<br>")), discordGroupBox);
+		legendLabel->setTextFormat(Qt::RichText);
+		legendLabel->setWordWrap(true);
+		discordGroupLayout->addWidget(legendLabel);
+	}
+
+	generalControlsLayout->addWidget(discordGroupBox);
 
 	generalControlsLayout->addSpacing(10);
 
@@ -994,6 +1036,9 @@ void SetupDialog::accept()
 					QString::number(!m_disableBackup));
 	ConfigManager::inst()->setValue("app", "openlastproject",
 					QString::number(m_openLastProject));
+	ConfigManager::inst()->setValue("discord", "enabled", QString::number(m_discordEnabled));
+	ConfigManager::inst()->setValue("discord", "details", m_discordDetailsEdit->text());
+	ConfigManager::inst()->setValue("discord", "state", m_discordStateEdit->text());
 	ConfigManager::inst()->setValue("ui", "detachbehavior", m_detachBehavior);
 	ConfigManager::inst()->setValue("app", "loopmarkermode", m_loopMarkerMode);
 	ConfigManager::inst()->setValue("app", "language", m_lang);
@@ -1054,6 +1099,8 @@ void SetupDialog::accept()
 		it.value()->saveSettings();
 	}
 	ConfigManager::inst()->saveConfigFile();
+
+	if (getGUI() && getGUI()->discordPresence()) { getGUI()->discordPresence()->applySettings(); }
 }
 
 
@@ -1133,6 +1180,12 @@ void SetupDialog::toggleDisableBackup(bool enabled)
 void SetupDialog::toggleOpenLastProject(bool enabled)
 {
 	m_openLastProject = enabled;
+}
+
+
+void SetupDialog::toggleDiscordPresence(bool enabled)
+{
+	m_discordEnabled = enabled;
 }
 
 

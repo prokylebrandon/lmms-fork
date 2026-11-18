@@ -5601,6 +5601,19 @@ void PianoRollWindow::reset()
 
 
 
+QString PianoRollWindow::currentScaleLabel() const
+{
+	if (m_editor->m_scaleModel.value() <= 0) { return {}; }
+
+	const QString scale = m_editor->m_scaleModel.currentText();
+	if (m_editor->m_keyModel.value() <= 0) { return scale; }
+
+	return m_editor->m_keyModel.currentText() + QLatin1Char(' ') + scale;
+}
+
+
+
+
 void PianoRollWindow::saveSettings( QDomDocument & doc, QDomElement & de )
 {
 	if( !m_editor->ghostNotes().empty() )

@@ -23,6 +23,7 @@
  */
 
 #include "GuiApplication.h"
+#include "DiscordPresence.h"
 
 #include "lmmsversion.h"
 
@@ -196,6 +197,9 @@ GuiApplication::GuiApplication()
 	m_mainWindow->finalize();
 
 	m_loadingProgressLabel = nullptr;
+
+	m_discordPresence = new DiscordPresence(this);
+	m_discordPresence->applySettings();
 }
 
 GuiApplication::~GuiApplication()
