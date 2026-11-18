@@ -26,6 +26,7 @@
 #ifndef LMMS_AUDIO_FILE_DEVICE_H
 #define LMMS_AUDIO_FILE_DEVICE_H
 
+#include "lmms_export.h"
 #include <QFile>
 
 #include "AudioDevice.h"
@@ -34,7 +35,7 @@
 namespace lmms
 {
 
-class AudioFileDevice : public AudioDevice
+class LMMS_EXPORT AudioFileDevice : public AudioDevice
 {
 public:
 	AudioFileDevice(OutputSettings const & outputSettings,
