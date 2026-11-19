@@ -84,6 +84,7 @@ OPTION(WANT_CMT		"Include Computer Music Toolkit LADSPA plugins" ON)
 OPTION(WANT_JACK	"Include JACK (Jack Audio Connection Kit) support" ON)
 OPTION(WANT_WEAKJACK	"Loosely link JACK libraries" ON)
 OPTION(WANT_LV2		"Include Lv2 plugins" ON)
+OPTION(WANT_VST3	"Include VST3 plugin host (PRESTIGE)" ON)
 OPTION(WANT_SUIL	"Include SUIL for LV2 plugin UIs" ON)
 OPTION(WANT_MP3LAME	"Include MP3/Lame support" ON)
 OPTION(WANT_OGGVORBIS	"Include OGG/Vorbis support" ON)
@@ -275,7 +276,7 @@ else()
 	set(STATUS_QT6 "Disabled")
 endif()
 
-find_package(Qt${QT_VERSION_MAJOR} ${LMMS_QT_MIN_VERSION} COMPONENTS Core Gui Widgets Xml Svg REQUIRED)
+find_package(Qt${QT_VERSION_MAJOR} ${LMMS_QT_MIN_VERSION} COMPONENTS Core Gui Widgets Xml Svg Network REQUIRED)
 find_package(Qt${QT_VERSION_MAJOR} COMPONENTS LinguistTools QUIET)
 
 message(STATUS "Using Qt version: ${Qt${QT_VERSION_MAJOR}_VERSION}")
@@ -293,6 +294,7 @@ set(QT_LIBRARIES
 	Qt${QT_VERSION_MAJOR}::Widgets
 	Qt${QT_VERSION_MAJOR}::Xml
 	Qt${QT_VERSION_MAJOR}::Svg
+	Qt${QT_VERSION_MAJOR}::Network
 )
 
 IF(LMMS_BUILD_LINUX AND WANT_VST AND NOT WANT_QT6)
@@ -354,6 +356,21 @@ if(WANT_LV2)
 	endif()
 else()
 	set(STATUS_LV2 "not built as requested")
+endif()
+
+if(WANT_VST3)
+	set(VST3SDK_SUBMODULE "${CMAKE_SOURCE_DIR}/plugins/Vst3Base/vst3sdk")
+	if(EXISTS "${VST3SDK_SUBMODULE}/CMakeLists.txt" OR
+	   EXISTS "${VST3SDK_SUBMODULE}/pluginterfaces/base/ftypes.h")
+		set(LMMS_HAVE_VST3 TRUE)
+		set(STATUS_VST3 "OK")
+	else()
+		set(STATUS_VST3 "vst3sdk submodule not initialised — run: git submodule update --init plugins/Vst3Base/vst3sdk")
+		message(WARNING "WANT_VST3 is ON but plugins/Vst3Base/vst3sdk is not initialised. "
+		                "Run: git submodule update --init plugins/Vst3Base/vst3sdk")
+	endif()
+else()
+	set(STATUS_VST3 "not built as requested")
 endif()
 
 IF(WANT_SUIL)
@@ -923,6 +940,7 @@ MESSAGE(
 "* VST plugin host             : ${STATUS_VST}\n"
 "  * 32-bit Windows host       : ${STATUS_VST_32}\n"
 "  * 64-bit Windows host       : ${STATUS_VST_64}\n"
+"* VST3 plugin host            : ${STATUS_VST3}\n"
 "* CALF LADSPA plugins         : ${STATUS_CALF}\n"
 "* CAPS LADSPA plugins         : ${STATUS_CAPS}\n"
 "* CMT LADSPA plugins          : ${STATUS_CMT}\n"

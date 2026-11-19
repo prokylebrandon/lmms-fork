@@ -129,6 +129,10 @@ SET(LMMS_SRCS
 	gui/widgets/TextFloat.cpp
 	gui/widgets/TimeDisplayWidget.cpp
 	gui/widgets/ToolButton.cpp
+	gui/DiscordIpcClient.cpp
+	gui/DiscordPresence.cpp
+	gui/PresencePlaceholders.cpp
+	gui/ProcessStats.cpp
 
 	PARENT_SCOPE
 )

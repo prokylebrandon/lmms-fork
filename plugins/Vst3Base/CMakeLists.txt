@@ -1,0 +1,146 @@
+if(NOT LMMS_HAVE_VST3)
+    return()
+endif()
+
+include(BuildPlugin)
+
+# ---- VST3 SDK submodule ----
+set(VST3SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/vst3sdk")
+
+# Sources we need from the SDK (host-side only; no VSTGUI, no samples)
+set(VST3SDK_SOURCES
+    # pluginterfaces — pure headers, but these have .cpp companions
+    ${VST3SDK_DIR}/pluginterfaces/base/conststringtable.cpp
+    ${VST3SDK_DIR}/pluginterfaces/base/coreiids.cpp
+    ${VST3SDK_DIR}/pluginterfaces/base/funknown.cpp
+    ${VST3SDK_DIR}/pluginterfaces/base/ustring.cpp
+
+    # base/source
+    ${VST3SDK_DIR}/base/source/baseiids.cpp
+    ${VST3SDK_DIR}/base/source/fbuffer.cpp
+    ${VST3SDK_DIR}/base/source/fdebug.cpp
+    ${VST3SDK_DIR}/base/source/fdynlib.cpp
+    ${VST3SDK_DIR}/base/source/fobject.cpp
+    ${VST3SDK_DIR}/base/source/fstreamer.cpp
+    ${VST3SDK_DIR}/base/source/fstring.cpp
+    ${VST3SDK_DIR}/base/source/timer.cpp
+    ${VST3SDK_DIR}/base/source/updatehandler.cpp
+
+    # vst — IID definitions (required at link time for every Vst:: interface's ::iid)
+    ${VST3SDK_DIR}/public.sdk/source/vst/vstinitiids.cpp
+
+    # vst utility (needed by hosting/module.cpp)
+    ${VST3SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/utility/systemtime.cpp
+
+    # base/thread — FLock used by Singleton/UpdateHandler
+    ${VST3SDK_DIR}/base/thread/source/flock.cpp
+
+    # common — StringConvert implementation (stringconvert.cpp above just wraps this)
+    ${VST3SDK_DIR}/public.sdk/source/common/commonstringconvert.cpp
+
+    # vst hosting layer
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/connectionproxy.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/eventlist.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/hostclasses.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/parameterchanges.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/pluginterfacesupport.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/plugprovider.cpp
+    ${VST3SDK_DIR}/public.sdk/source/vst/hosting/processdata.cpp
+
+    # common
+    ${VST3SDK_DIR}/public.sdk/source/common/memorystream.cpp
+)
+
+# Platform-specific module loader
+if(LMMS_BUILD_LINUX)
+    list(APPEND VST3SDK_SOURCES
+        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_linux.cpp
+        ${VST3SDK_DIR}/public.sdk/source/common/threadchecker_linux.cpp)
+elseif(LMMS_BUILD_WIN32)
+    list(APPEND VST3SDK_SOURCES
+        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_win32.cpp
+        ${VST3SDK_DIR}/public.sdk/source/common/threadchecker_win32.cpp)
+    # libc++ in the MSYS2 clangarm64 env no longer pulls <exception> in
+    # transitively, so std::terminate() in this SDK file fails to compile.
+    # Force-include it for this one file instead of editing the SDK.
+    if(NOT MSVC)
+        set_source_files_properties(
+            ${VST3SDK_DIR}/public.sdk/source/common/threadchecker_win32.cpp
+            PROPERTIES COMPILE_OPTIONS "-include;exception")
+    endif()
+elseif(LMMS_BUILD_APPLE)
+    list(APPEND VST3SDK_SOURCES
+        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm)
+    set_source_files_properties(
+        ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc"
+    )
+endif()
+
+# ---- vst3base shared library ----
+# Built as SHARED (matching vstbase) so future plugins (Prestige, Vst3Effect)
+# can link against it without duplicating SDK object code.
+#
+# Vst3ParameterModel.cpp (Task 2, batch 2): promoted here from
+# plugins/Prestige. It's a Model/AutomatableModel-based bridge, so it
+# needs a MOCFILES entry -- vst3base's other sources have no Q_OBJECT and
+# never needed one before this.
+BUILD_PLUGIN(vst3base
+    Vst3PluginInstance.cpp
+    Vst3PlugFrameIid.cpp
+    Vst3ParameterModel.cpp
+    ${VST3SDK_SOURCES}
+    MOCFILES Vst3ParameterModel.h
+    EXPORT_BASE_NAME vst3base
+    LINK SHARED
+)
+
+target_include_directories(vst3base
+    PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}   # exposes Vst3PluginInstance.h et al.
+        ${VST3SDK_DIR}              # exposes pluginterfaces/, public.sdk/, base/
+    PRIVATE
+        ${VST3SDK_DIR}/base/thread  # needed by fdebug.cpp on some platforms
+)
+
+# The SDK uses C++17 <filesystem> on Linux
+target_compile_features(vst3base PRIVATE cxx_std_17)
+
+# The SDK's base/source/fdebug.h refuses to compile unless one of
+# DEVELOPMENT / RELEASE / _DEBUG / NDEBUG is defined. MSVC's Debug config
+# defines _DEBUG and every Release-like config defines NDEBUG, but a GCC/Clang
+# "Debug" build defines neither, so it failed with "#error DEVELOPMENT,
+# RELEASE, _DEBUG, or NDEBUG must be defined!". Say it explicitly, the same
+# way the SDK's own CMake does (SMTG_PlatformToolset.cmake).
+target_compile_definitions(vst3base PRIVATE
+    $<IF:$<CONFIG:Debug>,DEVELOPMENT=1,RELEASE=1>
+)
+
+# MSVC: vst3base links lmms.lib, and both lmms.exe and vst3base end up
+# defining std::vector<float>'s constructor (identical inline code). Accept
+# the duplicate instead of failing with LNK2005/LNK1169.
+if(MSVC)
+    target_link_options(vst3base PRIVATE /FORCE:MULTIPLE)
+endif()
+
+# SDK silence: the SDK has internal warnings we can't fix
+target_compile_options(vst3base PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-w>
+)
+
+# Link against dl on Linux (needed by module_linux.cpp).
+# stdc++fs is only required on GCC < 9; later GCC and Clang ship filesystem
+# in the main runtime library.  Using $<LINK_ONLY:> with a generator
+# expression avoids linking it on toolchains that don't need it.
+if(LMMS_BUILD_LINUX)
+    target_link_libraries(vst3base dl)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
+        target_link_libraries(vst3base stdc++fs)
+    endif()
+endif()
+
+if(LMMS_BUILD_APPLE)
+    target_link_libraries(vst3base "-framework CoreFoundation")
+endif()

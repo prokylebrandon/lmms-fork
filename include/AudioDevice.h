@@ -25,6 +25,7 @@
 #ifndef LMMS_AUDIO_DEVICE_H
 #define LMMS_AUDIO_DEVICE_H
 
+#include "lmms_export.h"
 #include <QMutex>
 #include <samplerate.h>
 
@@ -40,7 +41,7 @@ class AudioBusHandle;
 class SampleFrame;
 
 
-class AudioDevice
+class LMMS_EXPORT AudioDevice
 {
 public:
 	AudioDevice( const ch_cnt_t _channels, AudioEngine* audioEngine );

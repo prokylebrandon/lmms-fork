@@ -567,6 +567,9 @@ public:
 
 	const MidiClip* currentMidiClip() const;
 	void setCurrentMidiClip( MidiClip* clip );
+
+	//! "<Key> <Scale>" as chosen in the key and scale selectors; empty if no scale is selected
+	QString currentScaleLabel() const;
 	void setGhostMidiClip( MidiClip* clip );
 
 	int quantization() const;

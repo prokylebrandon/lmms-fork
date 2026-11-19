@@ -38,6 +38,7 @@ namespace lmms::gui
 
 class AutomationEditorWindow;
 class ControllerRackView;
+class DiscordPresence;
 class MixerView;
 class MainWindow;
 class MicrotunerConfig;
@@ -80,6 +81,7 @@ public:
 	MicrotunerConfig* getMicrotunerConfig() { return m_microtunerConfig; }
 	AutomationEditorWindow* automationEditor() { return m_automationEditor; }
 	ControllerRackView* getControllerRackView() { return m_controllerRackView; }
+	DiscordPresence* discordPresence() { return m_discordPresence; }
 
 	//! File descriptors for unix socketpair, used to receive SIGINT
 	static inline int s_sigintFd[2];
@@ -105,6 +107,7 @@ private:
 	ControllerRackView* m_controllerRackView;
 	QLabel* m_loadingProgressLabel;
 	QSocketNotifier* m_sigintNotifier;
+	DiscordPresence* m_discordPresence = nullptr;
 };
 
 // Short-hand function

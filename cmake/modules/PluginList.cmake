@@ -59,6 +59,7 @@ SET(LMMS_PLUGIN_LIST
 	Patman
 	PeakControllerEffect
 	GigPlayer
+	Prestige
 	ReverbSC
 	Sf2Player
 	Sfxr
@@ -73,6 +74,8 @@ SET(LMMS_PLUGIN_LIST
 	VstBase
 	Vestige
 	VstEffect
+	Vst3Base
+	Vst3Effect
 	Watsyn
 	WaveShaper
 	Vectorscope

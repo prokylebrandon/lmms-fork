@@ -1,9 +1,6 @@
 ---
 name: checks
 'on': [push, pull_request]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   scripted-checks:
     runs-on: ubuntu-latest
@@ -12,7 +9,9 @@ jobs:
       - name: Install python-tinycss2
         run: sudo apt-get install -y python3-tinycss2
       - name: Update submodules
-        run: git submodule update --init --recursive
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 8 \
+            || git submodule update --init --recursive
       - name: Verify scripted tests
         run: tests/scripted/verify
       - name: Run check-strings

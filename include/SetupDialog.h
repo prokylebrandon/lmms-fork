@@ -85,6 +85,7 @@ private slots:
 	void toggleMMPZ(bool enabled);
 	void toggleDisableBackup(bool enabled);
 	void toggleOpenLastProject(bool enabled);
+	void toggleDiscordPresence(bool enabled);
 	void detachBehaviorChanged();
 	void loopMarkerModeChanged();
 	void setLanguage(int lang);
@@ -116,6 +117,8 @@ private slots:
 	void setWorkingDir(const QString & workingDir);
 	void openVSTDir();
 	void setVSTDir(const QString & vstDir);
+	void openVST3Dir();
+	void setVST3Dir(const QString & vst3Dir);
 	void openLADSPADir();
 	void setLADSPADir(const QString & ladspaDir);
 	void openSF2Dir();
@@ -149,6 +152,9 @@ private:
 	bool m_MMPZ;
 	bool m_disableBackup;
 	bool m_openLastProject;
+	bool m_discordEnabled = false;
+	QLineEdit* m_discordDetailsEdit = nullptr;
+	QLineEdit* m_discordStateEdit = nullptr;
 	QString m_detachBehavior;
 	QComboBox* m_detachBehaviorComboBox;
 	QString m_loopMarkerMode;
@@ -201,6 +207,7 @@ private:
 	// Paths settings widgets.
 	QString m_workingDir;
 	QString m_vstDir;
+	QString m_vst3Dir;
 	QString m_ladspaDir;
 	QString m_gigDir;
 	QString m_sf2Dir;
@@ -212,6 +219,7 @@ private:
 
 	QLineEdit * m_workingDirLineEdit;
 	QLineEdit * m_vstDirLineEdit;
+	QLineEdit * m_vst3DirLineEdit;
 	QLineEdit * m_themeDirLineEdit;
 	QLineEdit * m_ladspaDirLineEdit;
 	QLineEdit * m_gigDirLineEdit;

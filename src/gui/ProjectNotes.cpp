@@ -112,12 +112,14 @@ void ProjectNotes::setupActions()
 
 	auto a = new QAction(embed::getIconPixmap("edit_undo"), tr("&Undo"), this);
 	a->setShortcut( tr( "%1+Z" ).arg(UI_CTRL_KEY) );
+	a->setShortcutContext(Qt::WidgetShortcut); // the main window owns Undo/Redo app-wide; a window-scoped twin makes the key ambiguous and Qt then fires neither
 	connect( a, SIGNAL(triggered()), m_edit, SLOT(undo()));
 	tb->addAction( a );
 
 	a = new QAction( embed::getIconPixmap( "edit_redo" ), tr( "&Redo" ),
 									this );
 	a->setShortcut( tr( "%1+Y" ).arg(UI_CTRL_KEY) );
+	a->setShortcutContext(Qt::WidgetShortcut); // the main window owns Undo/Redo app-wide; a window-scoped twin makes the key ambiguous and Qt then fires neither
 	connect( a, SIGNAL(triggered()), m_edit, SLOT(redo()));
 	tb->addAction( a );
 

@@ -271,10 +271,13 @@ void MainWindow::finalize()
 		const QKeySequence& shortcut, auto(MainWindow::* slot)()) -> QAction*
 	{
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 3, 0))
-		return menu->addAction(embed::getIconPixmap(icon), text, shortcut, this, slot);
+		QAction* action = menu->addAction(embed::getIconPixmap(icon), text, shortcut, this, slot);
 #else
-		return menu->addAction(embed::getIconPixmap(icon), text, this, slot, shortcut);
+		QAction* action = menu->addAction(embed::getIconPixmap(icon), text, this, slot, shortcut);
 #endif
+		// A window-scoped shortcut is dead while a detached sub-window (its own top-level window) is active.
+		action->setShortcutContext(Qt::ApplicationShortcut);
+		return action;
 	};
 
 	// project-popup-menu
@@ -342,6 +345,15 @@ void MainWindow::finalize()
 		this, SLOT(showSettingsDialog()));
 
 	connect(edit_menu, SIGNAL(aboutToShow()), this, SLOT(updateUndoRedoButtons()));
+	// Greying out an action also disables its shortcut. updateUndoRedoButtons() runs
+	// when the menu opens, so re-enable both actions when it closes; otherwise
+	// Ctrl+Z / Ctrl+Y stay dead until the menu is opened again. undo()/redo() are
+	// harmless no-ops when their stack is empty.
+	connect(edit_menu, &QMenu::aboutToHide, this, [this]
+	{
+		m_undoAction->setEnabled(true);
+		m_redoAction->setEnabled(true);
+	});
 
 	m_viewMenu = new QMenu( this );
 	menuBar()->addMenu( m_viewMenu )->setText( tr( "&View" ) );

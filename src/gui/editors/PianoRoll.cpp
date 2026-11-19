@@ -1104,11 +1104,7 @@ void PianoRoll::drawDetuningInfo( QPainter & _p, const Note * _n, int _x,
 	int middle_y = _y + m_keyLineHeight / 2;
 	_p.setBrush(QBrush(m_noteColor));
 	_p.setPen(m_noteColor);
-	_p.setClipRect(
-		m_whiteKeyWidth,
-		PR_TOP_MARGIN,
-		width() - m_whiteKeyWidth,
-		keyAreaBottom() - PR_TOP_MARGIN);
+	_p.setClipRect(m_whiteKeyWidth, PR_TOP_MARGIN, width() - m_whiteKeyWidth, keyAreaBottom() - PR_TOP_MARGIN);
 
 	// Draw lines for the detuning automation, treating cubic hermit curves
 	// as straight lines for now. Also draw discrete jumps.
@@ -1711,10 +1707,14 @@ void PianoRoll::mousePressEvent(QMouseEvent * me )
 		}
 
 		// Only the currently selected notes are used for detuning
-		// If the user is clicking on a note without any others selected, make that note selected so that it will be counted
-		if (clickedNote && !clickedNote->selected() && getSelectedNotes().empty())
+		// Clicking a note that isn't selected switches the selection to that note, so the user
+		// can move from note to note. Clicking a selected note keeps the whole selection,
+		// so several notes can still be bent together.
+		if (clickedNote && !clickedNote->selected())
 		{
+			for (Note* note : m_midiClip->notes()) { note->setSelected(false); }
 			clickedNote->setSelected(true);
+			update();
 			// If there are already automation nodes in the detuning curve, don't immediately place a new when the user clicks on the note to select it
 			if (clickedNote->detuning() && clickedNote->detuning()->hasAutomation()) { return; }
 		}
@@ -2867,6 +2867,12 @@ void PianoRoll::updateParameterEditPos(QMouseEvent* me, Note::ParameterType para
 	{
 		AutomationClip* aClip = note->parameterCurve(paramType);
 		if (aClip == nullptr) { continue; }
+		// Only the clicked note may extend past its own end; other selected notes keep their limit so one click cannot spill onto neighbours.
+		if (m_parameterEditDownLeft && note != m_parameterEditClickedNote)
+		{
+			const int otherLenTicks = note->length() > 0 ? static_cast<int>(note->length()) : 4;
+			if (static_cast<int>(relativePos) > otherLenTicks) { continue; }
+		}
 		// If left-clicking, add/drag a node.
 		if (m_parameterEditDownLeft)
 		{
@@ -5137,6 +5143,7 @@ Note * PianoRoll::parameterEditNoteUnderMouse(Note::ParameterType paramType)
 
 	// Loop through all notes having their detuning/parameter being edited, and find the one whose automation curve is closest to the mouse.
 	int minScore = -1;
+	bool closestInSpan = false;
 	Note* closestNote = nullptr;
 	for (Note* note : getSelectedNotes())
 	{
@@ -5157,10 +5164,14 @@ Note * PianoRoll::parameterEditNoteUnderMouse(Note::ParameterType paramType)
 
 		int distanceScore = verticalPixelOffset * verticalPixelOffset + horizontalPixelOffset * horizontalPixelOffset;
 
-		if (distanceScore < minScore || minScore == -1)
+		// A note whose own span contains the cursor beats one that is only close by (e.g. an earlier note's bent tail), so clicking on a new note starts that note's line.
+		const int spanEnd = note->length() > 0 ? static_cast<int>(note->endPos()) : static_cast<int>(note->pos()) + 4;
+		const bool inSpan = posTicks < spanEnd;
+		if (closestNote == nullptr || (inSpan && !closestInSpan) || (inSpan == closestInSpan && distanceScore < minScore))
 		{
 			minScore = distanceScore;
 			closestNote = note;
+			closestInSpan = inSpan;
 		}
 	}
 	return closestNote;
@@ -5596,6 +5607,19 @@ void PianoRollWindow::stopRecording()
 void PianoRollWindow::reset()
 {
 	m_editor->reset();
+}
+
+
+
+
+QString PianoRollWindow::currentScaleLabel() const
+{
+	if (m_editor->m_scaleModel.value() <= 0) { return {}; }
+
+	const QString scale = m_editor->m_scaleModel.currentText();
+	if (m_editor->m_keyModel.value() <= 0) { return scale; }
+
+	return m_editor->m_keyModel.currentText() + QLatin1Char(' ') + scale;
 }
 
 
