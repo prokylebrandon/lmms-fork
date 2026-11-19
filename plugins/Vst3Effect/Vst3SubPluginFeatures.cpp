@@ -51,6 +51,19 @@ void Vst3SubPluginFeatures::fillDescriptionWidget(QWidget* parent, const Key* ke
 	new QLabel(QWidget::tr("Bundle: ") + key->attributes.value("file"), parent);
 }
 
+QString Vst3SubPluginFeatures::displayName(const Key& k) const
+{
+	if (!k.isValid()) { return QString(); }
+	if (!k.name.isEmpty()) { return k.name; }
+
+	// A key loaded from a project has no name, as only its attributes are saved
+	const QString savedName = k.attributes.value("name");
+	if (!savedName.isEmpty()) { return savedName; }
+
+	// Projects saved before the name was stored as an attribute: use the bundle's file name
+	return QFileInfo(k.attributes.value("file")).completeBaseName();
+}
+
 void Vst3SubPluginFeatures::scanDir(const QString& dirPath, QStringList& bundlesOut) const
 {
 	QDir dir(dirPath);
@@ -164,11 +177,14 @@ void Vst3SubPluginFeatures::listSubPluginKeys(const Plugin::Descriptor* desc, Ke
 			am["vendor"]   = info.vendor;
 			am["category"] = info.category;
 
-			const QString displayName = info.name.isEmpty()
+			const QString className = info.name.isEmpty()
 				? QFileInfo(bundlePath).completeBaseName()
 				: info.name;
 
-			kl.push_back(Key(desc, displayName, am));
+			// Keys only save their attributes, so this is what lets a loaded project show the name again
+			am["name"] = className;
+
+			kl.push_back(Key(desc, className, am));
 		}
 	}
 }

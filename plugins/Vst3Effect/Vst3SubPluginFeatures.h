@@ -51,6 +51,10 @@ public:
 	void listSubPluginKeys(const Plugin::Descriptor* desc, KeyList& kl) const override;
 
 private:
+	//! The name shown for an effect. A key loaded from a project has no name, because keys only save their
+	//! attributes, so this falls back on the saved "name" attribute and then on the bundle's file name.
+	QString displayName(const Key& k) const override;
+
 	//! Recursively collects .vst3 bundle paths under dirPath. A bundle may
 	//! be a directory (the common case) or a single file -- both shapes
 	//! are matched rather than assuming one (Phase 4 spec explicitly warns

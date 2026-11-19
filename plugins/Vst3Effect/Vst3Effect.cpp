@@ -111,6 +111,7 @@ bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid)
 		Vst3PluginInstance::discoverClasses(bundlePath, &discoverError);
 
 	int classIndex = -1;
+	QString className;
 	for (const Vst3ClassInfo& info : classes)
 	{
 		// Task 0 (batch 2) resolution, verified against the real
@@ -124,6 +125,7 @@ bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid)
 		if (info.cid == uid)
 		{
 			classIndex = info.classIndex;
+			className = info.name;
 			break;
 		}
 	}
@@ -161,6 +163,10 @@ bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid)
 
 	m_key.attributes["file"] = bundlePath;
 	m_key.attributes["uid"] = uid;
+
+	// A key loaded from a project has no name, so take it from the plugin itself
+	if (m_key.name.isEmpty() && !className.isEmpty()) { m_key.name = className; }
+
 	return true;
 }
 
