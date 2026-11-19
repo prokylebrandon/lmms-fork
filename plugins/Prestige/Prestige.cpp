@@ -810,12 +810,11 @@ void PrestigeInstrument::applySavedElement(const QDomElement& element)
 			{
 				if (model->id() == id)
 				{
-					// The blob wins only for a parameter it actually changed. One it left
-				// untouched (or any parameter, if the blob failed) takes the saved value.
+					// A cleanly restored plugin state is authoritative; saved values are only pushed
+				// back when it failed or was absent, so a stale controller snapshot cannot overwrite it.
 				const auto before = preRestoreValues.find(id);
 				const auto after = m_plugin->getParameterNormalized(id);
-				const bool blobSetIt = stateRestoredOk && before != preRestoreValues.end() && after
-					&& std::fabs(*after - before->second) > 1e-6;
+				const bool blobSetIt = stateRestoredOk; (void)before; (void)after;
 				if (blobSetIt) { ++diagBlobWon; } else { ++diagSavedApplied; }
 				model->loadSettings(paramElement, !blobSetIt);
 					break;
