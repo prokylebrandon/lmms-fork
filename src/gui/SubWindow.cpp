@@ -52,6 +52,27 @@ namespace lmms::gui
 {
 
 
+namespace
+{
+
+//! Draws the glyph for the title bar's minimize button, so it doesn't depend on a theme image.
+QIcon makeMinimizeIcon(const QSize& size)
+{
+	QPixmap pixmap(size);
+	pixmap.fill(Qt::transparent);
+
+	QPainter p(&pixmap);
+	const QRect bar(size.width() / 4, size.height() * 2 / 3, size.width() / 2, 2);
+	p.fillRect(bar.translated(1, 1), Qt::black);
+	p.fillRect(bar, Qt::white);
+	p.end();
+
+	return QIcon(pixmap);
+}
+
+} // namespace
+
+
 SubWindow::SubWindow(QWidget* parent, Qt::WindowFlags windowFlags)
 	: QMdiSubWindow{parent, windowFlags}
 	, m_buttonSize{17, 17}
@@ -83,6 +104,11 @@ SubWindow::SubWindow(QWidget* parent, Qt::WindowFlags windowFlags)
 
 	m_maximizeBtn = createButton("maximize", tr("Maximize"));
 	connect(m_maximizeBtn, &QPushButton::clicked, this, &QWidget::showMaximized);
+
+	// minimize button (reuses the restore image, then replaces the glyph)
+	m_minimizeBtn = createButton("restore", tr("Minimize"));
+	m_minimizeBtn->setIcon(makeMinimizeIcon(m_buttonSize));
+	connect(m_minimizeBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
 
 	m_restoreBtn = createButton("restore", tr("Restore"));
 	connect(m_restoreBtn, &QPushButton::clicked, this, &QWidget::showNormal);
@@ -445,6 +471,7 @@ void SubWindow::adjustTitleBar()
 		m_maximizeBtn->hide();
 		m_restoreBtn->hide();
 		m_windowTitle->hide();
+		m_minimizeBtn->hide();
 
 		return;
 	}
@@ -459,6 +486,7 @@ void SubWindow::adjustTitleBar()
 	m_maximizeBtn->hide();
 	m_restoreBtn->hide();
 	m_detachBtn->hide();
+	m_minimizeBtn->hide();
 	m_closeBtn->show();
 
 	const int rightSpace = 3;
@@ -491,10 +519,21 @@ void SubWindow::adjustTitleBar()
 		}
 	}
 
+	// minimize button, to the left of the maximize button. While the window is
+	// minimized, the restore button below takes its place.
+	if (!isMinimized())
+	{
+		m_minimizeBtn->move(buttonPos);
+		m_minimizeBtn->show();
+		buttonPos -= buttonStep;
+		buttonBarWidth = buttonBarWidth + m_buttonSize.width() + buttonGap;
+	}
+
 	// we're keeping the restore button around if we open projects
 	// from older versions that have saved minimized windows
 	if (isMinimized())
 	{
+		m_restoreBtn->move(buttonPos);
 		m_restoreBtn->show();
 		buttonPos -= buttonStep;
 	}

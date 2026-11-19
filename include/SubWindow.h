@@ -127,6 +127,7 @@ private:
 	const QSize m_buttonSize;
 	const int m_titleBarHeight;
 	QPushButton * m_closeBtn;
+	QPushButton * m_minimizeBtn;
 	QPushButton * m_maximizeBtn;
 	QPushButton * m_restoreBtn;
 	QPushButton* m_detachBtn;

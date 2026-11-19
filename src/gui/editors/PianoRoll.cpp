@@ -1707,10 +1707,14 @@ void PianoRoll::mousePressEvent(QMouseEvent * me )
 		}
 
 		// Only the currently selected notes are used for detuning
-		// If the user is clicking on a note without any others selected, make that note selected so that it will be counted
-		if (clickedNote && !clickedNote->selected() && getSelectedNotes().empty())
+		// Clicking a note that isn't selected switches the selection to that note, so the user
+		// can move from note to note. Clicking a selected note keeps the whole selection,
+		// so several notes can still be bent together.
+		if (clickedNote && !clickedNote->selected())
 		{
+			for (Note* note : m_midiClip->notes()) { note->setSelected(false); }
 			clickedNote->setSelected(true);
+			update();
 			// If there are already automation nodes in the detuning curve, don't immediately place a new when the user clicks on the note to select it
 			if (clickedNote->detuning() && clickedNote->detuning()->hasAutomation()) { return; }
 		}
