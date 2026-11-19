@@ -58,6 +58,7 @@
 #include "embed.h"
 #include "GuiApplication.h"
 #include "FontHelper.h"
+#include "HumanizeDialog.h"
 #include "InstrumentTrack.h"
 #include "KeyboardShortcuts.h"
 #include "lmms_math.h"
@@ -5052,6 +5053,30 @@ void PianoRoll::quantizeNotes(QuantizeAction mode)
 
 
 
+void PianoRoll::humanizeNotes()
+{
+	if (!hasValidMidiClip()) { return; }
+
+	// Like quantizing: use the selected notes, or all notes if nothing is selected
+	NoteVector notes = getSelectedNotes();
+	if (notes.empty())
+	{
+		for (Note* n : m_midiClip->notes()) { notes.push_back(n); }
+	}
+	if (notes.empty()) { return; }
+
+	HumanizeDialog dialog(m_midiClip, notes, [this]()
+	{
+		update();
+		getGUI()->songEditor()->update();
+	}, this);
+
+	if (dialog.exec() == QDialog::Accepted) { Engine::getSong()->setModified(); }
+}
+
+
+
+
 void PianoRoll::updateSemiToneMarkerMenu()
 {
 	const InstrumentFunctionNoteStacking::ChordTable& chord_table =
@@ -5223,16 +5248,19 @@ PianoRollWindow::PianoRollWindow() :
 	auto quantizeAction = new QAction(embed::getIconPixmap("quantize"), tr("Quantize"), this);
 	auto quantizePosAction = new QAction(tr("Quantize positions"), this);
 	auto quantizeLengthAction = new QAction(tr("Quantize lengths"), this);
+	auto humanizeAction = new QAction(tr("Humanize"), this);
 
 	connect(quantizeAction, &QAction::triggered, [this](){ m_editor->quantizeNotes(); });
 	connect(quantizePosAction, &QAction::triggered, [this](){ m_editor->quantizeNotes(PianoRoll::QuantizeAction::Pos); });
 	connect(quantizeLengthAction, &QAction::triggered, [this](){ m_editor->quantizeNotes(PianoRoll::QuantizeAction::Length); });
+	connect(humanizeAction, &QAction::triggered, [this](){ m_editor->humanizeNotes(); });
 
 	quantizeButton->setPopupMode(QToolButton::MenuButtonPopup);
 	quantizeButton->setDefaultAction(quantizeAction);
 	quantizeButton->setMenu(quantizeButtonMenu);
 	quantizeButtonMenu->addAction(quantizePosAction);
 	quantizeButtonMenu->addAction(quantizeLengthAction);
+	quantizeButtonMenu->addAction(humanizeAction);
 
 	notesActionsToolBar->addAction( drawAction );
 	notesActionsToolBar->addAction( eraseAction );

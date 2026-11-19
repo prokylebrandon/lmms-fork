@@ -231,6 +231,7 @@ protected slots:
 	void noteLengthChanged();
 	void keyChanged();
 	void quantizeNotes(QuantizeAction mode = QuantizeAction::Both);
+	void humanizeNotes();
 
 	void updateSemiToneMarkerMenu();
 
