@@ -239,6 +239,8 @@ private slots:
 	void timelineFollowsTempoAutomation()
 	{
 		using namespace lmms;
+		// Keep the render-only device thread from rendering extra periods while the song is stepped here (the mutex is recursive, so this thread can still render)
+		const auto changesGuard = Engine::audioEngine()->requestChangesGuard();
 		auto song = Engine::getSong();
 		auto audioEngine = Engine::audioEngine();
 		auto& timeline = song->getTimeline(Song::PlayMode::Song);
