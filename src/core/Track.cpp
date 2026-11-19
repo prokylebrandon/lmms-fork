@@ -462,33 +462,34 @@ void Track::toggleSolo()
 {
 	const TrackContainer::TrackList & tl = m_trackContainer->tracks();
 
-	bool soloBefore = false;
+	bool otherTrackAlreadySolo = false;
 	for (const auto& track : tl)
 	{
 		if (track != this)
 		{
 			if (track->m_soloModel.value())
 			{
-				soloBefore = true;
+				otherTrackAlreadySolo = true;
 				break;
 			}
 		}
 	}
 
-	const bool solo = m_soloModel.value();
+	const bool soloEnabled = m_soloModel.value();
 	// Should we use the new behavior of solo or the older/legacy one?
+	// Legacy: soloing a track mutes all other tracks including automation tracks
+	// New: soloing a track leaves other automation tracks in pre-solo state
 	const bool soloLegacyBehavior = ConfigManager::inst()->value("app", "sololegacybehavior", "0").toInt();
 
 	for (const auto& track : tl)
 	{
-		if (solo)
+		if (soloEnabled)
 		{
-			// save mute-state in case no track was solo before
-			if (!soloBefore)
+			// Save mute-states in case no track was solo before
+			if (!otherTrackAlreadySolo)
 			{
 				track->m_mutedBeforeSolo = track->isMuted();
 			}
-			// Don't mute AutomationTracks (keep their original state) unless we are on the sololegacybehavior mode
 			if (track == this)
 			{
 				track->setMuted(false);
@@ -502,14 +503,10 @@ void Track::toggleSolo()
 				track->m_soloModel.setValue(false);
 			}
 		}
-		else if (!soloBefore)
+		// Revert all tracks to pre-solo values
+		else if (!otherTrackAlreadySolo)
 		{
-			// Unless we are on the sololegacybehavior mode, only restores the
-			// mute state if the track isn't an Automation Track
-			if (soloLegacyBehavior || track->type() != Type::Automation)
-			{
-				track->setMuted(track->m_mutedBeforeSolo);
-			}
+			track->setMuted(track->m_mutedBeforeSolo);
 		}
 	}
 }
