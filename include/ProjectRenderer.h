@@ -67,6 +67,11 @@ public:
 		return m_fileDev != nullptr;
 	}
 
+	//! True if writing to the output file failed while rendering.
+	bool hasWriteError() const { return m_fileDev != nullptr && m_fileDev->hasWriteError(); }
+
+	QString outputFile() const { return m_fileDev != nullptr ? m_fileDev->outputFile() : QString{}; }
+
 	static ExportFileFormat getFileFormatFromExtension(
 							const QString & _ext );
 

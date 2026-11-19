@@ -190,6 +190,7 @@ void printHelp()
 		"  -f, --format <format>         Specify format of render-output where\n"
 		"          Format is either 'wav', 'flac', 'ogg' or 'mp3'.\n"
 		"  -l, --loop                     Render as a loop\n"
+		"      --no-tail                  Skip the reverb/delay tail at the end\n"
 		"  -m, --mode                     Stereo mode used for MP3 export\n"
 		"          Possible values: s, j, m\n"
 		"            s: Stereo\n"
@@ -252,6 +253,7 @@ int main( int argc, char * * argv )
 	bool exitAfterImport = false;
 	bool allowRoot = false;
 	bool renderLoop = false;
+	bool renderTail = true;
 	bool renderTracks = false;
 	QString fileToLoad, fileToImport, renderOut, profilerOutputFile, configFile;
 
@@ -485,6 +487,10 @@ int main( int argc, char * * argv )
 		else if( arg == "--loop" || arg == "-l" )
 		{
 			renderLoop = true;
+		}
+		else if( arg == "--no-tail" )
+		{
+			renderTail = false;
 		}
 		else if( arg == "--output" || arg == "-o" )
 		{
@@ -722,6 +728,7 @@ int main( int argc, char * * argv )
 		printf( "Done\n" );
 
 		Engine::getSong()->setExportLoop( renderLoop );
+		Engine::getSong()->setExportTail( renderTail );
 
 		// when rendering multiple tracks, renderOut is a directory
 		// otherwise, it is a file, so we need to append the file extension

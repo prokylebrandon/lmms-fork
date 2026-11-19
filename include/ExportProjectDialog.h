@@ -82,6 +82,7 @@ private:
 
 	QCheckBox* m_exportAsLoopBox = nullptr;
 	QCheckBox* m_exportBetweenLoopMarkersBox = nullptr;
+	QCheckBox* m_exportTailBox = nullptr;
 	QLabel* m_loopRepeatLabel = nullptr;
 	QSpinBox* m_loopRepeatBox = nullptr;
 	QPushButton* m_startButton = nullptr;

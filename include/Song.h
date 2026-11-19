@@ -196,6 +196,22 @@ public:
 	bool isExportDone() const;
 	int getExportProgress() const;
 
+	inline void setExportTail( bool exportTail )
+	{
+		m_exportTail = exportTail;
+	}
+
+	inline bool exportTail() const
+	{
+		return m_exportTail;
+	}
+
+	//! Stops the song from starting new notes while the export keeps running, so effect tails can ring out.
+	inline void endExportPlayback()
+	{
+		m_playing = false;
+	}
+
 	inline void setRenderBetweenMarkers( bool renderBetweenMarkers )
 	{
 		m_renderBetweenMarkers = renderBetweenMarkers;
@@ -427,6 +443,7 @@ private:
 	volatile bool m_exporting;
 	volatile bool m_exportLoop;
 	volatile bool m_renderBetweenMarkers;
+	volatile bool m_exportTail;
 	volatile bool m_playing;
 	volatile bool m_paused;
 

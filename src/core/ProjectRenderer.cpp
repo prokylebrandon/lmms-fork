@@ -23,6 +23,8 @@
  */
 
 
+#include <cmath>
+
 #include <QFile>
 
 #include "ProjectRenderer.h"
@@ -165,12 +167,43 @@ void ProjectRenderer::run()
 	{
 		const auto buffer = Engine::audioEngine()->renderNextPeriod();
 		m_fileDev->writeBuffer(buffer.data(), buffer.size());
+		if (m_fileDev->hasWriteError()) { break; }
 
 		const int nprog = Engine::getSong()->getExportProgress();
 		if (m_progress != nprog)
 		{
 			m_progress = nprog;
 			emit progressChanged( m_progress );
+		}
+	}
+
+	// Let reverb and delay tails ring out: stop the song from starting new notes,
+	// then keep rendering until half a second of near-silence (30 seconds at most).
+	if (!m_abort && !m_fileDev->hasWriteError() && Engine::getSong()->exportTail())
+	{
+		Engine::getSong()->endExportPlayback();
+
+		const auto sampleRate = static_cast<std::size_t>(m_fileDev->getOutputSettings().getSampleRate());
+		const auto maxFrames = 30 * sampleRate;
+		const auto quietFramesNeeded = sampleRate / 2;
+		constexpr auto silenceThreshold = 0.0001f; // about -80 dBFS
+
+		auto renderedFrames = std::size_t{0};
+		auto quietFrames = std::size_t{0};
+		while (!m_abort && renderedFrames < maxFrames && quietFrames < quietFramesNeeded)
+		{
+			const auto buffer = Engine::audioEngine()->renderNextPeriod();
+			m_fileDev->writeBuffer(buffer.data(), buffer.size());
+			if (m_fileDev->hasWriteError()) { break; }
+
+			auto loud = false;
+			for (const auto& frame : buffer)
+			{
+				if (std::abs(frame.left()) > silenceThreshold || std::abs(frame.right()) > silenceThreshold) { loud = true; break; }
+			}
+
+			renderedFrames += buffer.size();
+			quietFrames = loud ? 0 : quietFrames + buffer.size();
 		}
 	}
 

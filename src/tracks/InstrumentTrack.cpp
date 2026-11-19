@@ -686,6 +686,9 @@ void InstrumentTrack::removeMidiPortNode( DataFile & _dataFile )
 bool InstrumentTrack::play( const TimePos & _start, const f_cnt_t _frames,
 							const f_cnt_t _offset, int _clip_num )
 {
+	// Muted tracks are silent anyway, so do not start notes for them while exporting.
+	if (Engine::getSong()->isExporting() && isMuted()) { return false; }
+
 	if( ! m_instrument || ! tryLock() )
 	{
 		return false;

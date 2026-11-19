@@ -36,6 +36,7 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include "ConfigManager.h"
 #include "Engine.h"
 #include "ProjectRenderer.h"
 #include "Song.h"
@@ -69,6 +70,7 @@ ExportProjectDialog::ExportProjectDialog(const QString& path, Mode mode, QWidget
 	, m_fileFormatSettingsLayout(new QFormLayout(m_fileFormatSettingsGroupBox))
 	, m_exportAsLoopBox(new QCheckBox(tr("Export as loop (remove extra bar)")))
 	, m_exportBetweenLoopMarkersBox(new QCheckBox(tr("Export between loop markers")))
+	, m_exportTailBox(new QCheckBox(tr("Let reverb and delay tails ring out")))
 	, m_loopRepeatLabel(new QLabel(tr("Render looped section:")))
 	, m_loopRepeatBox(new QSpinBox())
 	, m_startButton(new QPushButton(tr("Start")))
@@ -161,6 +163,7 @@ ExportProjectDialog::ExportProjectDialog(const QString& path, Mode mode, QWidget
 	auto exportSettingsLayout = new QVBoxLayout{exportSettingsGroupBox};
 	exportSettingsLayout->addWidget(m_exportAsLoopBox);
 	exportSettingsLayout->addWidget(m_exportBetweenLoopMarkersBox);
+	exportSettingsLayout->addWidget(m_exportTailBox);
 	exportSettingsLayout->addLayout(loopRepeatLayout);
 
 	m_fileFormatSettingsLayout->addRow(m_fileFormatLabel, m_fileFormatComboBox);
@@ -178,6 +181,9 @@ ExportProjectDialog::ExportProjectDialog(const QString& path, Mode mode, QWidget
 	mainLayout->addWidget(m_progressBar);
 
 	m_progressBar->setValue(0);
+	m_exportTailBox->setChecked(ConfigManager::inst()->value("export", "tail", "1").toInt() != 0);
+	m_exportTailBox->setToolTip(tr("After the project ends, keep rendering until the output has been quiet for half a second (30 seconds at most). Not used when exporting as a loop."));
+	connect(m_exportAsLoopBox, &QCheckBox::toggled, this, [this](bool loop) { m_exportTailBox->setEnabled(!loop); });
 	m_loopRepeatBox->setRange(1, maxLoopRepeat);
 	m_loopRepeatBox->setValue(1);
 	m_loopRepeatBox->setSuffix(tr(" time(s)"));
@@ -258,6 +264,8 @@ void ExportProjectDialog::onStartButtonClicked()
 
 	Engine::getSong()->setExportLoop(m_exportAsLoopBox->isChecked());
 	Engine::getSong()->setRenderBetweenMarkers(m_exportBetweenLoopMarkersBox->isChecked());
+	ConfigManager::inst()->setValue("export", "tail", QString::number(m_exportTailBox->isChecked() ? 1 : 0));
+	Engine::getSong()->setExportTail(m_exportTailBox->isChecked() && !m_exportAsLoopBox->isChecked());
 	Engine::getSong()->setLoopRenderCount(m_loopRepeatBox->value());
 
 	connect(m_renderManager.get(), &RenderManager::progressChanged, m_progressBar, &QProgressBar::setValue);

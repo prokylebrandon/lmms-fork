@@ -50,11 +50,17 @@ public:
 
 	OutputSettings const & getOutputSettings() const { return m_outputSettings; }
 
+	//! True once a write to the output file has failed (for example a full disk).
+	bool hasWriteError() const { return m_writeFailed; }
+
 	//! Write `size` sample frames from `buf` into the output file.
 	virtual void writeBuffer(const SampleFrame* buf, const f_cnt_t frames) = 0;
 
 protected:
 	int writeData( const void* data, int len );
+
+	//! Records a failed write so the renderer can stop and report it.
+	void setWriteError() { m_writeFailed = true; }
 
 	inline bool outputFileOpened() const
 	{
@@ -72,6 +78,7 @@ private:
 
 	QFile m_outputFile;
 	OutputSettings m_outputSettings;
+	bool m_writeFailed = false;
 } ;
 
 using AudioFileDeviceInstantiaton

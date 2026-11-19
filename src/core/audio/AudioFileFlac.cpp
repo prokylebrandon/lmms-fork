@@ -104,13 +104,13 @@ void AudioFileFlac::writeBuffer(const SampleFrame* _ab, f_cnt_t const frames)
 				buf[frame*channels() + channel] = std::max(clipvalue, _ab[frame][channel]);
 			}
 		}
-		sf_writef_float(m_sf, static_cast<float*>(buf.data()), frames);
+		if (sf_writef_float(m_sf, static_cast<float*>(buf.data()), frames) != static_cast<sf_count_t>(frames)) { setWriteError(); }
 	}
 	else // integer PCM encoding
 	{
 		auto buf = std::vector<int_sample_t>(frames * channels());
 		toInt16leInterleaved(_ab, frames, buf.data());
-		sf_writef_short(m_sf, static_cast<short*>(buf.data()), frames);
+		if (sf_writef_short(m_sf, static_cast<short*>(buf.data()), frames) != static_cast<sf_count_t>(frames)) { setWriteError(); }
 	}
 
 }

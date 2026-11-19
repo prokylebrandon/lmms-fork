@@ -23,16 +23,37 @@
  */
 
 #include <QDir>
+#include <QMessageBox>
 #include <QRegularExpression>
 
 #include "RenderManager.h"
 
+#include "GuiApplication.h"
 #include "PatternStore.h"
 #include "Song.h"
 
 
 namespace lmms
 {
+
+namespace
+{
+
+//! Shows the error in a message box, or prints it and exits with a failure code when there is no GUI.
+void reportRenderError(const QString& title, const QString& message)
+{
+	if (gui::getGUI() != nullptr)
+	{
+		QMessageBox::critical(nullptr, title, message);
+	}
+	else
+	{
+		fprintf(stderr, "%s\n", message.toUtf8().constData());
+		exit(EXIT_FAILURE);
+	}
+}
+
+} // namespace
 
 RenderManager::RenderManager(
 	const OutputSettings& outputSettings, ProjectRenderer::ExportFileFormat fmt, QString outputPath)
@@ -61,6 +82,18 @@ void RenderManager::abortProcessing()
 // Called to render each new track when rendering tracks individually.
 void RenderManager::renderNextTrack()
 {
+	if (m_activeRenderer && m_activeRenderer->hasWriteError())
+	{
+		const auto file = m_activeRenderer->outputFile();
+		m_activeRenderer.reset();
+		m_tracksToRender.clear();
+		restoreMutedState();
+		reportRenderError(tr("Export failed"),
+			tr("Writing to %1 failed. The disk may be full, or the file may no longer be writable.").arg(file));
+		emit finished();
+		return;
+	}
+
 	m_activeRenderer.reset();
 
 	if (m_tracksToRender.empty())
@@ -151,7 +184,10 @@ void RenderManager::render(QString outputPath)
 	}
 	else
 	{
-		qDebug( "Renderer failed to acquire a file device!" );
+		qWarning( "Renderer failed to acquire a file device!" );
+		m_tracksToRender.clear();
+		reportRenderError(tr("Export failed"),
+			tr("Could not start exporting to %1.\nThe audio encoder failed to initialize (unsupported settings, or the file could not be written).").arg(outputPath));
 		renderNextTrack();
 	}
 }

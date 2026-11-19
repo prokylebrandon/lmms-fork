@@ -83,6 +83,7 @@ Song::Song() :
 	m_exporting( false ),
 	m_exportLoop( false ),
 	m_renderBetweenMarkers( false ),
+	m_exportTail( true ),
 	m_playing( false ),
 	m_paused( false ),
 	m_savingProject( false ),
