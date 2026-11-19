@@ -321,6 +321,7 @@ std::span<const SampleFrame> AudioEngine::renderNextPeriod()
 
 	m_profiler.startPeriod();
 	s_renderingThread = true;
+	m_periodCounter.fetch_add(1, std::memory_order_relaxed);
 
 	renderStageNoteSetup();     // STAGE 0: clear old play handles and buffers, setup new play handles
 	renderStageInstruments();   // STAGE 1: run and render all play handles

@@ -983,11 +983,12 @@ bool Vst3PluginInstance::startProcessing(QString* errorOut)
     return true;
 }
 
-void Vst3PluginInstance::setTransport(double tempoBpm, bool playing, double projectTimeQuarters, int timeSigNumerator, int timeSigDenominator)
+void Vst3PluginInstance::setTransport(double tempoBpm, bool playing, double projectTimeQuarters, int timeSigNumerator, int timeSigDenominator, double projectTimeSeconds)
 {
     m_transportTempo     = tempoBpm > 0.0 ? tempoBpm : 120.0;
     m_transportPlaying   = playing;
     m_transportQuarters  = projectTimeQuarters;
+    m_transportSeconds   = projectTimeSeconds;
     m_transportSigNum    = timeSigNumerator > 0 ? timeSigNumerator : 4;
     m_transportSigDen    = timeSigDenominator > 0 ? timeSigDenominator : 4;
     m_transportValid     = true;
@@ -1252,7 +1253,9 @@ void Vst3PluginInstance::processAudio(const float* inputs,
         transportContext.timeSigDenominator = m_transportSigDen;
         transportContext.projectTimeMusic   = m_transportQuarters;
         transportContext.projectTimeSamples = static_cast<Steinberg::Vst::TSamples>(
-            m_transportQuarters * 60.0 / m_transportTempo * m_sampleRate);
+            m_transportSeconds >= 0.0
+                ? m_transportSeconds * m_sampleRate
+                : m_transportQuarters * 60.0 / m_transportTempo * m_sampleRate);
     }
     Steinberg::Vst::ProcessData pd{};
     pd.processMode         = m_offline ? Steinberg::Vst::kOffline : Steinberg::Vst::kRealtime;

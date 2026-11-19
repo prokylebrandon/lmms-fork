@@ -26,6 +26,8 @@
 #define LMMS_AUDIO_ENGINE_H
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 
 #include <QThread>
@@ -171,6 +173,19 @@ public:
 	}
 
 	void removePlayHandlesOfTypes(Track * track, PlayHandle::Types types);
+
+	//! Calls @p func for every play handle that was added after the current period started, and so is not in
+	//! playHandles() yet (for example a note created earlier in the period that is being rendered).
+	//! Only valid on the audio thread, or while holding requestChangeInModel().
+	template<typename Func>
+	void forEachNewPlayHandle(Func&& func)
+	{
+		for (auto element = m_newPlayHandles.first(); element; element = element->next) { func(element->value); }
+	}
+
+	//! Number of periods started so far. Lets code that runs several times per period tell whether two calls
+	//! belong to the same period.
+	std::uint64_t periodCounter() const { return m_periodCounter.load(std::memory_order_relaxed); }
 
 	AudioEngineProfiler& profiler()
 	{
@@ -404,6 +419,7 @@ private:
 	AudioEngineProfiler m_profiler;
 
 	bool m_clearSignal;
+	std::atomic<std::uint64_t> m_periodCounter = 0;
 	std::atomic<bool> m_sanitizationEnabled = false;
 
 	std::recursive_mutex m_changeMutex;

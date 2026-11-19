@@ -23,6 +23,9 @@
  */
 #include "InstrumentTrack.h"
 
+#include <algorithm>
+#include <limits>
+
 #include "AudioEngine.h"
 #include "AutomationClip.h"
 #include "ConfigManager.h"
@@ -80,6 +83,12 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	m_lastKeyModel.setInitValue(NumKeys - 1);
 
 	m_mixerChannelModel.setRange( 0, Engine::mixer()->numChannels()-1, 1);
+
+	for (int i = 0; i < NumKeys; ++i)
+	{
+		m_lastNoteOffPeriod[i] = std::numeric_limits<std::uint64_t>::max();
+		m_lastNoteOffOffset[i] = 0;
+	}
 
 	for( int i = 0; i < NumKeys; ++i )
 	{
@@ -475,6 +484,14 @@ void InstrumentTrack::processOutEvent( const MidiEvent& event, const TimePos& ti
 
 			if( key >= 0 && key < NumKeys )
 			{
+				// A NoteOff for this key that was already sent during this period, at a later sample offset than
+				// this NoteOn, would reach the instrument after it (instruments sort their events by offset) and
+				// cancel the new note. Start the note when the earlier one ends instead.
+				if (m_lastNoteOffPeriod[key] == Engine::audioEngine()->periodCounter() && offset < m_lastNoteOffOffset[key])
+				{
+					offset = std::min(m_lastNoteOffOffset[key], Engine::audioEngine()->framesPerPeriod() - 1);
+				}
+
 				if( m_runningMidiNotes[key] > 0 )
 				{
 					m_instrument->handleMidiEvent( MidiEvent( MidiNoteOff, handleEventOutputChannel, key, 0 ), time, offset );
@@ -494,6 +511,8 @@ void InstrumentTrack::processOutEvent( const MidiEvent& event, const TimePos& ti
 			if( key >= 0 && key < NumKeys && --m_runningMidiNotes[key] <= 0 )
 			{
 				m_instrument->handleMidiEvent( MidiEvent( MidiNoteOff, handleEventOutputChannel, key, 0 ), time, offset );
+				m_lastNoteOffPeriod[key] = Engine::audioEngine()->periodCounter();
+				m_lastNoteOffOffset[key] = offset;
 			}
 			m_midiNotesMutex.unlock();
 			emit endNote();

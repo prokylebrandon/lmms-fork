@@ -248,8 +248,10 @@ public:
 	/*! Process note detuning automation */
 	void processTimePos(const TimePos& time, float pitchValue, bool isRecording);
 
-	/*! Updates total length (m_frames) depending on a new tempo */
-	void resize( const bpm_t newTempo );
+	/*! Updates total length (m_frames) depending on a new tempo. @p framesUntilChange is the frame of the current
+	    period at which the new tempo takes effect (0 for a change between periods): frames played before it keep
+	    their length, only the rest of the note is converted. */
+	void resize( const bpm_t newTempo, const f_cnt_t framesUntilChange = 0 );
 
 	/*! Set song-global offset (relative to containing MIDI clip) in order to properly perform the note detuning */
 	void setSongGlobalParentOffset( const TimePos& offset )
@@ -315,8 +317,8 @@ private:
 	Track* m_patternTrack;						// related pattern track
 
 	// tempo reaction
-	bpm_t m_origTempo;						// original tempo
-	f_cnt_t m_origFrames;					// original m_frames
+	bpm_t m_tempo;							// tempo the remaining frames of the note are currently expressed in (updated by resize())
+	double m_exactFrames = 0.0;				// m_frames before rounding, so many small tempo steps do not add up rounding errors
 
 	int m_origBaseNote;
 

@@ -33,6 +33,8 @@
 #include "Song.h"
 #include "lmms_math.h"
 
+#include <algorithm>
+
 namespace lmms
 {
 
@@ -71,7 +73,7 @@ NotePlayHandle::NotePlayHandle( InstrumentTrack* instrumentTrack,
 	m_hadChildren( false ),
 	m_muted( false ),
 	m_patternTrack( nullptr ),
-	m_origTempo( Engine::getSong()->getTempo() ),
+	m_tempo( Engine::getSong()->getTempo() ),
 	m_origBaseNote( instrumentTrack->baseNote() ),
 	m_frequency( 0 ),
 	m_unpitchedFrequency( 0 ),
@@ -426,7 +428,7 @@ void NotePlayHandle::setFrames( const f_cnt_t _frames )
 	{
 		m_frames = m_instrumentTrack->beatLen( this );
 	}
-	m_origFrames = m_frames;
+	m_exactFrames = static_cast<double>( m_frames );
 }
 
 
@@ -579,7 +581,7 @@ void NotePlayHandle::processTimePos(const TimePos& time, float pitchValue, bool 
 
 
 
-void NotePlayHandle::resize( const bpm_t _new_tempo )
+void NotePlayHandle::resize( const bpm_t _new_tempo, const f_cnt_t _framesUntilChange )
 {
 	if (origin() == Origin::MidiInput ||
 		(origin() == Origin::NoteStacking && m_parent->origin() == Origin::MidiInput))
@@ -590,14 +592,30 @@ void NotePlayHandle::resize( const bpm_t _new_tempo )
 		return;
 	}
 
-	double completed = m_totalFramesPlayed / (double) m_frames;
-	double new_frames = m_origFrames * m_origTempo / (double) _new_tempo;
-	m_frames = (f_cnt_t)new_frames;
-	m_totalFramesPlayed = (f_cnt_t)( completed * new_frames );
+	if (_new_tempo > 0 && _new_tempo != m_tempo && m_exactFrames > 0.0)
+	{
+		// Frames of the note already played at the old tempo when the new one takes effect: everything played in
+		// earlier periods, plus the part of the current period before the change. A note that starts later in the
+		// period (or in a later one) has played nothing yet at that point.
+		const auto framesUntilChange = static_cast<double>(_framesUntilChange);
+		const auto pending = m_totalFramesPlayed == 0
+			? framesUntilChange - static_cast<double>(offset())
+			: framesUntilChange;
+		const auto elapsed = static_cast<double>(m_totalFramesPlayed) + std::max(0.0, pending);
+
+		// Only the frames after the change are converted. A note that already ends before the change keeps its length.
+		// m_totalFramesPlayed is left alone: play() and the instruments use it to tell whether the note has started.
+		if (elapsed < m_exactFrames)
+		{
+			m_exactFrames = elapsed + (m_exactFrames - elapsed) * m_tempo / _new_tempo;
+			m_frames = static_cast<f_cnt_t>(m_exactFrames + 0.5);
+		}
+		m_tempo = _new_tempo;
+	}
 
 	for (const auto& subNote : m_subNotes)
 	{
-		subNote->resize(_new_tempo);
+		subNote->resize(_new_tempo, _framesUntilChange);
 	}
 }
 

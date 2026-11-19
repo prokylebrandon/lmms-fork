@@ -149,7 +149,8 @@ void PrestigeInstrument::play(SampleFrame* workingBuffer)
 		const auto framesPerTick = static_cast<double>(Engine::framesPerTick());
 		const double ticks = static_cast<double>(timeline.ticks()) + (framesPerTick > 0.0 ? timeline.frameOffset() / framesPerTick : 0.0);
 		m_plugin->setTransport(static_cast<double>(song->getTempo()), song->isPlaying() || song->isExporting(),
-			ticks / (DefaultTicksPerBar / 4.0), timeSig.getNumerator(), timeSig.getDenominator());
+			ticks / (DefaultTicksPerBar / 4.0), timeSig.getNumerator(), timeSig.getDenominator(),
+			timeline.getElapsedSeconds());
 		// Per-note pitch bend from the piano roll -> VST3 tuning note expression (see playNote()).
 		for (int key = 0; key <= MidiMaxKey; ++key)
 		{

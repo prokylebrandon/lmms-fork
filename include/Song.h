@@ -478,6 +478,10 @@ private:
 
 	AutomatedValueMap m_oldAutomatedValues;
 
+	//! Frame of the period being rendered at which a tempo change takes effect. Set while automation is processed
+	//! in the middle of a period (see processNextBuffer()), zero for changes made between periods.
+	f_cnt_t m_tempoChangeOffset = 0;
+
 	Metronome m_metronome;
 
 	friend class Engine;

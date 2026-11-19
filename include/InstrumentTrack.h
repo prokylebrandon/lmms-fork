@@ -27,6 +27,8 @@
 #define LMMS_INSTRUMENT_TRACK_H
 
 
+#include <cstdint>
+
 #include "AudioBusHandle.h"
 #include "InstrumentFunctions.h"
 #include "InstrumentSoundShaping.h"
@@ -292,6 +294,12 @@ private:
 
 	int m_runningMidiNotes[NumKeys];
 	QMutex m_midiNotesMutex;
+
+	//! Per key: the period (AudioEngine::periodCounter()) and sample offset of the last NoteOff sent to the
+	//! instrument. processOutEvent() uses them so a NoteOn is never placed before a NoteOff for the same key within
+	//! one period: instruments sort their events by offset and the NoteOff would cancel the new note.
+	std::uint64_t m_lastNoteOffPeriod[NumKeys];
+	f_cnt_t m_lastNoteOffOffset[NumKeys];
 
 	bool m_sustainPedalPressed;
 

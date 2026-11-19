@@ -158,22 +158,41 @@ void Song::masterVolumeChanged()
 
 void Song::setTempo()
 {
-	Engine::audioEngine()->requestChangeInModel();
-	const auto tempo = (bpm_t)m_tempoModel.value();
-	PlayHandleList & playHandles = Engine::audioEngine()->playHandles();
-	for (const auto& playHandle : playHandles)
+	auto audioEngine = Engine::audioEngine();
+	audioEngine->requestChangeInModel();
+
+	const auto tempo = static_cast<bpm_t>(m_tempoModel.value());
+
+	// A tick that is already partly elapsed (tempo changed from the GUI in the middle of a tick) keeps its progress
+	// instead of being measured against the new tick length, so rescale the frame offset of every timeline.
+	const auto oldFramesPerTick = Engine::framesPerTick();
+	Engine::updateFramesPerTick();
+	const auto newFramesPerTick = Engine::framesPerTick();
+	if (oldFramesPerTick > 0 && newFramesPerTick > 0 && oldFramesPerTick != newFramesPerTick)
 	{
-		auto nph = dynamic_cast<NotePlayHandle*>(playHandle);
-		if( nph && !nph->isReleased() )
+		for (auto& timeline : m_timelines)
 		{
-			nph->lock();
-			nph->resize( tempo );
-			nph->unlock();
+			timeline.setFrameOffset(timeline.frameOffset() * newFramesPerTick / oldFramesPerTick);
 		}
 	}
-	Engine::audioEngine()->doneChangeInModel();
 
-	Engine::updateFramesPerTick();
+	// Rescale the notes that are sounding. A note keeps the frames it has already played; only the rest of it is
+	// converted, from the frame of the current period at which the change happens (m_tempoChangeOffset). Notes
+	// created earlier in this period are not in playHandles() yet, so they are visited separately.
+	const auto resizeNote = [this, tempo](PlayHandle* playHandle)
+	{
+		auto nph = dynamic_cast<NotePlayHandle*>(playHandle);
+		if (nph && !nph->isReleased())
+		{
+			nph->lock();
+			nph->resize(tempo, m_tempoChangeOffset);
+			nph->unlock();
+		}
+	};
+	for (const auto& playHandle : audioEngine->playHandles()) { resizeNote(playHandle); }
+	audioEngine->forEachNewPlayHandle(resizeNote);
+
+	audioEngine->doneChangeInModel();
 
 	m_vstSyncController.setTempo( tempo );
 
@@ -266,13 +285,15 @@ void Song::processNextBuffer()
 	// Ensure playback begins within the loop if it is enabled
 	if (loopEnabled) { enforceLoop(timeline.loopBegin(), timeline.loopEnd()); }
 
-	const auto framesPerTick = Engine::framesPerTick();
 	const auto framesPerPeriod = Engine::audioEngine()->framesPerPeriod();
 
 	f_cnt_t frameOffsetInPeriod = 0;
 
 	while (frameOffsetInPeriod < framesPerPeriod)
 	{
+		// The tick length can change while a period is rendered (tempo automation, see below), so it is read on
+		// every pass instead of once per period.
+		auto framesPerTick = Engine::framesPerTick();
 		auto frameOffsetInTick = timeline.frameOffset();
 
 		// If a whole tick has elapsed, update the frame and tick count, and check any loops
@@ -315,10 +336,6 @@ void Song::processNextBuffer()
 		}
 
 		const f_cnt_t framesUntilNextPeriod = framesPerPeriod - frameOffsetInPeriod;
-		const auto framesUntilNextTick = static_cast<f_cnt_t>(std::ceil(framesPerTick - frameOffsetInTick));
-
-		// We want to proceed to the next buffer or tick, whichever is closer
-		const auto framesToPlay = std::min(framesUntilNextPeriod, framesUntilNextTick);
 
 		if (frameOffsetInPeriod == 0)
 		{
@@ -330,10 +347,33 @@ void Song::processNextBuffer()
 			m_vstSyncController.update();
 		}
 
-		if (static_cast<f_cnt_t>(frameOffsetInTick) == 0)
+		const auto isFirstFrameOfTick = static_cast<f_cnt_t>(frameOffsetInTick) == 0;
+		if (isFirstFrameOfTick)
 		{
-			// First frame of tick: process automation and play tracks
-			processAutomations(trackList, getPlayPos(), framesToPlay);
+			// First frame of tick: process automation. This can change the tempo (see setTempo()), which takes
+			// effect at this frame, so tell setTempo() where in the period that is.
+			m_tempoChangeOffset = frameOffsetInPeriod;
+			processAutomations(trackList, getPlayPos(), framesUntilNextPeriod);
+			m_tempoChangeOffset = 0;
+
+			// The tick that starts here has to last as long as the new tempo says, not as long as the old one
+			// did, so the segment length below must use the new tick length.
+			const auto newFramesPerTick = Engine::framesPerTick();
+			if (newFramesPerTick != framesPerTick)
+			{
+				framesPerTick = newFramesPerTick;
+				frameOffsetInTick = timeline.frameOffset();
+			}
+		}
+
+		const auto framesUntilNextTick = static_cast<f_cnt_t>(std::ceil(framesPerTick - frameOffsetInTick));
+
+		// We want to proceed to the next buffer or tick, whichever is closer
+		const auto framesToPlay = std::min(framesUntilNextPeriod, framesUntilNextTick);
+
+		if (isFirstFrameOfTick)
+		{
+			// First frame of tick: play tracks
 			processMetronome(frameOffsetInPeriod);
 
 			for (const auto track : trackList)

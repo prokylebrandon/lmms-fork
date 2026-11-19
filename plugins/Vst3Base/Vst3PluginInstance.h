@@ -233,8 +233,11 @@ public:
      * Tempo and transport for the next processAudio() call; it becomes the VST3
      * ProcessContext. Call it from the thread that calls processAudio(),
      * immediately before it. Block-level accuracy only.
+     * @p projectTimeSeconds is the elapsed project time (Timeline::getElapsedSeconds()). It gives the plugin's
+     * projectTimeSamples; the tick position times the current tempo is wrong once the tempo has been automated.
+     * A negative value falls back to computing it from @p projectTimeQuarters and the tempo.
      */
-    void setTransport(double tempoBpm, bool playing, double projectTimeQuarters, int timeSigNumerator, int timeSigDenominator);
+    void setTransport(double tempoBpm, bool playing, double projectTimeQuarters, int timeSigNumerator, int timeSigDenominator, double projectTimeSeconds = -1.0);
 
     bool isProcessing() const { return m_processing; }
 
@@ -579,6 +582,7 @@ private:
     bool   m_transportPlaying = false;
     double m_transportTempo = 120.0;
     double m_transportQuarters = 0.0;
+    double m_transportSeconds = -1.0;   // elapsed project time; negative = not supplied (derive samples from quarters and tempo)
     int    m_transportSigNum = 4;
     int    m_transportSigDen = 4;
     bool   m_hasInputBus = false; // false for synths with no audio input bus
