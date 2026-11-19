@@ -324,7 +324,8 @@ void SubWindow::detach()
 	auto flags = windowFlags();
 	flags |= Qt::Window;
 	flags &= ~Qt::SubWindow;
-	flags |= Qt::WindowMinimizeButtonHint;
+	flags |= Qt::WindowTitleHint | Qt::WindowMinimizeButtonHint | Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint;
+	flags &= ~Qt::MSWindowsFixedSizeDialogHint;
 
 	hide();
 	widget()->setWindowFlags(flags);
