@@ -143,6 +143,9 @@ void Editor::keyPressEvent(QKeyEvent* ke)
 {
 	if (ke->key() == Qt::Key_Space)
 	{
+		// Holding Space must not rapidly start and stop playback
+		if (ke->isAutoRepeat()) { return; }
+
 		if (ke->modifiers() & Qt::ShiftModifier)
 		{
 			togglePause();

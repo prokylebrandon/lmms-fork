@@ -1346,6 +1346,9 @@ void MainWindow::keyPressEvent( QKeyEvent * _ke )
 		case Qt::Key_Alt: m_keyMods.m_alt = true; break;
 		case Qt::Key_Space:
 		{
+			// Holding Space must not rapidly start and stop playback
+			if (_ke->isAutoRepeat()) { break; }
+
 			// Fall back on the song editor if nothing has been played from an editor yet
 			Editor* editor = Editor::lastPlayedEditor();
 			if (!editor) { editor = getGUI()->songEditor(); }

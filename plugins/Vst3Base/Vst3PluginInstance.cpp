@@ -1271,7 +1271,11 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     pd.outputEvents           = nullptr;
     pd.processContext         = m_transportValid ? &transportContext : nullptr;
 
-    const Steinberg::tresult processResult = proc->process(pd);
+    // A C++ exception escaping a plugin's process() on the audio thread would terminate the whole program,
+    // so a throwing plugin is treated like one whose process() failed (handled just below).
+    Steinberg::tresult processResult = Steinberg::kResultFalse;
+    try { processResult = proc->process(pd); }
+    catch (...) { processResult = Steinberg::kResultFalse; }
     if (processResult != Steinberg::kResultOk)
     {
         // The VST3 contract leaves the output buffers undefined when

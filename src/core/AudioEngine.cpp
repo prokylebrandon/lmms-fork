@@ -199,11 +199,7 @@ void AudioEngine::renderStageNoteSetup()
 {
 	AudioEngineProfiler::Probe profilerProbe(m_profiler, AudioEngineProfiler::DetailType::NoteSetup);
 
-	if( m_clearSignal )
-	{
-		m_clearSignal = false;
-		clearInternal();
-	}
+	if (m_clearSignal.exchange(false)) { clearInternal(); }
 
 	// remove all play-handles that have to be deleted and delete
 	// them if they still exist...

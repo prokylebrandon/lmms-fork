@@ -418,7 +418,7 @@ private:
 
 	AudioEngineProfiler m_profiler;
 
-	bool m_clearSignal;
+	std::atomic<bool> m_clearSignal;
 	std::atomic<std::uint64_t> m_periodCounter = 0;
 	std::atomic<bool> m_sanitizationEnabled = false;
 

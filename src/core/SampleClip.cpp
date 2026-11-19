@@ -203,7 +203,7 @@ void SampleClip::playbackPositionChanged()
 {
 	Engine::audioEngine()->removePlayHandlesOfTypes( getTrack(), PlayHandle::Type::SamplePlayHandle );
 	auto st = dynamic_cast<SampleTrack*>(getTrack());
-	st->setPlayingClips( false );
+	if (st) { st->setPlayingClips( false ); }
 }
 
 
