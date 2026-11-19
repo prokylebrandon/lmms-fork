@@ -189,6 +189,29 @@ public:
         m_events.push_back(e);
     }
 
+    /// Sample offset of the most recent NoteOn for noteId in this block, or 0 when the note did not start in this block (a bend for a note that is already sounding applies from the start of the block).
+    Steinberg::int32 noteOnOffset(Steinberg::int32 noteId) const
+    {
+        for (std::size_t i = m_events.size(); i-- > 0;)
+        {
+            const auto& ev = m_events[i];
+            if (ev.type == Steinberg::Vst::Event::kNoteOnEvent && ev.noteOn.noteId == noteId) { return ev.sampleOffset; }
+        }
+        return 0;
+    }
+
+    /// VST3 wants events in ascending sampleOffset order. Stable insertion sort (equal offsets keep their order; no allocation, this runs on the audio thread). Almost always already sorted, so O(n).
+    void sortBySampleOffset()
+    {
+        for (std::size_t i = 1; i < m_events.size(); ++i)
+        {
+            const Steinberg::Vst::Event ev = m_events[i];
+            std::size_t j = i;
+            while (j > 0 && m_events[j - 1].sampleOffset > ev.sampleOffset) { m_events[j] = m_events[j - 1]; --j; }
+            m_events[j] = ev;
+        }
+    }
+
     /// Largest sample offset of any event added so far, or 0 when the list is empty (events are not kept sorted, so the last one added is not necessarily the latest).
     Steinberg::int32 lastSampleOffset() const { Steinberg::int32 latest = 0; for (const auto& ev : m_events) { latest = std::max(latest, ev.sampleOffset); } return latest; }
 

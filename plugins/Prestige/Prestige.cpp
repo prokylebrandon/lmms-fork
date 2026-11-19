@@ -40,6 +40,7 @@
 #include <QMutexLocker>
 #include <QObject>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTextStream>
 #include <QTimer>
 #include "AudioFileDevice.h"
@@ -156,13 +157,168 @@ void PrestigeInstrument::play(SampleFrame* workingBuffer)
 			if (bend != m_sentBend[key])
 			{
 				m_sentBend[key] = bend;
-				m_plugin->setNoteTuning(key, bend);
+				forwardNoteBendLocked(key, bend);
 			}
 		}
 		m_plugin->processAudio(nullptr, out, frames);
 	}
 
 	m_pluginMutex.unlock();
+}
+
+void PrestigeInstrument::resetNoteRoutingLocked()
+{
+	for (int key = 0; key <= MidiMaxKey; ++key)
+	{
+		m_keyChannelPlus1[key].store(0, std::memory_order_relaxed);
+		m_keyOwner[key].store(nullptr, std::memory_order_relaxed);
+		m_pendingBend[key].store(0.0f, std::memory_order_relaxed);
+		m_sentBend[key] = 0.0f;
+	}
+	for (int c = 0; c < MidiChannelCount; ++c)
+	{
+		m_channelHeld[c] = false;
+		m_channelBent[c] = false;
+		m_channelKey[c] = 0;
+		m_channelStamp[c] = 0;
+	}
+	m_channelClock = 0;
+}
+
+int PrestigeInstrument::allocateMpeChannelLocked()
+{
+	// Channels 1..15; channel 0 stays the MPE master and is never given to a note.
+	// Free channel used longest ago first (a channel that just released may still be in its release tail).
+	int best = -1;
+	for (int c = 1; c < MidiChannelCount; ++c)
+	{
+		if (!m_channelHeld[c] && (best < 0 || m_channelStamp[c] < m_channelStamp[best])) { best = c; }
+	}
+	if (best < 0)
+	{
+		// All 15 channels hold a note: cut the one held longest.
+		best = 1;
+		for (int c = 2; c < MidiChannelCount; ++c)
+		{
+			if (m_channelStamp[c] < m_channelStamp[best]) { best = c; }
+		}
+		const int stolenKey = m_channelKey[best];
+		m_plugin->queueMidiEvent(MidiEvent(MidiNoteOff, static_cast<int8_t>(best), static_cast<int16_t>(stolenKey), 0), 0);
+		m_keyChannelPlus1[stolenKey].store(0, std::memory_order_relaxed);
+		m_keyOwner[stolenKey].store(nullptr, std::memory_order_release);
+		m_channelHeld[best] = false;
+	}
+	return best;
+}
+
+void PrestigeInstrument::routeMidiEventLocked(const MidiEvent& event, f_cnt_t offset)
+{
+	const int sampleOffset = static_cast<int>(offset);
+	const int key = event.key();
+	const bool keyInRange = key >= 0 && key <= MidiMaxKey;
+	const bool isNoteOn = keyInRange && event.type() == MidiNoteOn && event.velocity() > 0;
+	const bool isNoteOff = keyInRange && (event.type() == MidiNoteOff || (event.type() == MidiNoteOn && event.velocity() == 0));
+
+	if (isNoteOn)
+	{
+		// The newest note on this key owns the bend slot from now on (bound in its first playNote()).
+		m_keyOwner[key].store(nullptr, std::memory_order_release);
+
+		if (!m_mpeBend)
+		{
+			// Tuning note-expression path (or no per-note bend at all): one shared channel, as before.
+			m_keyChannelPlus1[key].store(qMax(0, static_cast<int>(event.channel())) + 1, std::memory_order_relaxed);
+			m_plugin->queueMidiEvent(event, sampleOffset);
+			if (m_plugin->supportsNoteTuning())
+			{
+				// Replaces a tuning value still pending from the previous note on this key.
+				m_plugin->setNoteTuning(key, 0.0f);
+			}
+			return;
+		}
+
+		// The track NoteOff normally comes first; release a note still held on this key on its own channel.
+		const int previous = m_keyChannelPlus1[key].load(std::memory_order_relaxed) - 1;
+		if (previous > 0 && m_channelHeld[previous] && m_channelKey[previous] == key)
+		{
+			m_plugin->queueMidiEvent(MidiEvent(MidiNoteOff, static_cast<int8_t>(previous), static_cast<int16_t>(key), 0), sampleOffset);
+			m_channelHeld[previous] = false;
+			m_channelStamp[previous] = ++m_channelClock;
+		}
+
+		const int c = allocateMpeChannelLocked();
+		m_channelHeld[c] = true;
+		m_channelKey[c] = key;
+		m_channelStamp[c] = ++m_channelClock;
+		m_keyChannelPlus1[key].store(c + 1, std::memory_order_relaxed);
+
+		// A new note must never inherit the bend left on this channel by an earlier note: centre it BEFORE
+		// the NoteOn. Only sent if a bend was actually sent on the channel since its last reset, so a plugin
+		// without MPE (one shared wheel) is not recentred by every note.
+		if (m_channelBent[c])
+		{
+			m_channelBent[c] = false;
+			m_plugin->queueMidiEvent(MidiEvent(MidiPitchBend, static_cast<int8_t>(c), 8192), sampleOffset);
+		}
+		MidiEvent noteOn(event);
+		noteOn.setChannel(static_cast<int8_t>(c));
+		m_plugin->queueMidiEvent(noteOn, sampleOffset);
+		return;
+	}
+
+	if (isNoteOff)
+	{
+		const int held = m_keyChannelPlus1[key].load(std::memory_order_relaxed);
+		m_keyChannelPlus1[key].store(0, std::memory_order_relaxed);
+		m_keyOwner[key].store(nullptr, std::memory_order_release);
+		if (!m_mpeBend)
+		{
+			m_plugin->queueMidiEvent(event, sampleOffset);
+			return;
+		}
+		if (held <= 1)
+		{
+			return; // no channel known (note was cut by channel stealing): nothing to release
+		}
+		const int c = held - 1;
+		m_channelHeld[c] = false;
+		m_channelStamp[c] = ++m_channelClock;
+		MidiEvent noteOff(event);
+		noteOff.setChannel(static_cast<int8_t>(c));
+		m_plugin->queueMidiEvent(noteOff, sampleOffset);
+		return;
+	}
+
+	if (m_mpeBend && event.type() == MidiPitchBend)
+	{
+		// The track pitch wheel is a global bend: send it on the MPE master channel.
+		MidiEvent master(event);
+		master.setChannel(0);
+		m_plugin->queueMidiEvent(master, sampleOffset);
+		return;
+	}
+
+	m_plugin->queueMidiEvent(event, sampleOffset);
+}
+
+void PrestigeInstrument::forwardNoteBendLocked(int key, float semitones)
+{
+	if (!m_mpeBend)
+	{
+		m_plugin->setNoteTuning(key, semitones);
+		return;
+	}
+	const int channelPlus1 = m_keyChannelPlus1[key].load(std::memory_order_relaxed);
+	if (channelPlus1 <= 1)
+	{
+		return; // key not held
+	}
+	const int c = channelPlus1 - 1;
+	// 0.5 + semitones / (2 * range), clamped to 0..1, as a 14-bit value (8192 = centre).
+	const double normalised = qBound(0.0, 0.5 + semitones / (2.0 * m_bendRange.load(std::memory_order_relaxed)), 1.0);
+	const int raw = qBound(0, qRound(normalised * 16383.0), 16383);
+	m_channelBent[c] = raw != 8192;
+	m_plugin->queueMidiEvent(MidiEvent(MidiPitchBend, static_cast<int8_t>(c), static_cast<int16_t>(raw)), 0);
 }
 
 void PrestigeInstrument::playNote(NotePlayHandle* n, SampleFrame* workingBuffer)
@@ -175,6 +331,18 @@ void PrestigeInstrument::playNote(NotePlayHandle* n, SampleFrame* workingBuffer)
 	// received (same mapping as InstrumentTrack::processOutEvent), which is also its noteId.
 	const int key = instrumentTrack()->masterKey(n->midiKey());
 	if (key < 0 || key > MidiMaxKey) { return; }
+	// Only the newest note on a key may move its bend slot, so a releasing older note on the same key
+	// cannot overwrite it (the owner is dropped at the note NoteOff). The owner is bound in a note first
+	// playNote(), which runs right after its NoteOn reached handleMidiEvent().
+	if (m_keyOwner[key].load(std::memory_order_acquire) != n)
+	{
+		const NotePlayHandle* expected = nullptr;
+		if (n->totalFramesPlayed() != 0 || m_keyChannelPlus1[key].load(std::memory_order_relaxed) == 0
+			|| !m_keyOwner[key].compare_exchange_strong(expected, n, std::memory_order_acq_rel))
+		{
+			return;
+		}
+	}
 	m_pendingBend[key].store(n->currentDetuning(), std::memory_order_relaxed);
 }
 
@@ -194,7 +362,7 @@ bool PrestigeInstrument::handleMidiEvent(const MidiEvent& event, const TimePos& 
 			m_sentBend[event.key()] = 0.0f;
 			m_pendingBend[event.key()].store(0.0f, std::memory_order_relaxed);
 		}
-		m_plugin->queueMidiEvent(event, static_cast<int>(offset));
+		routeMidiEventLocked(event, offset);
 	}
 	return true;
 }
@@ -375,6 +543,14 @@ bool PrestigeInstrument::instantiatePlugin(const QString& preferredCid)
 	m_classCid = resolvedCid;
 	m_savedName = m_plugin->name();
 	m_savedVendor = m_plugin->vendor();
+
+	// Per-note bend route, decided once per load: a plugin with the tuning note expression keeps using it;
+	// otherwise, if IMidiMapping maps pitch bend per channel, every note gets its own MIDI channel (MPE style,
+	// see routeMidiEventLocked()). Vital needs its MPE option switched on by the user; PRESTIGE cannot do that
+	// and does not rely on it silently.
+	resetNoteRoutingLocked();
+	m_mpeBend = !m_plugin->supportsNoteTuning() && m_plugin->supportsChannelPitchBend();
+	qWarning("PRESTIGE: per-note bend via %s", m_mpeBend ? "per-note MIDI channels (MPE)" : "tuning note expression");
 	m_status = LoadStatus::Loaded;
 	m_lastError.clear();
 
@@ -632,6 +808,7 @@ void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 	// missing when the project is next opened; identity is path + cid.
 	parent.setAttribute("pluginname", m_savedName);
 	parent.setAttribute("pluginvendor", m_savedVendor);
+parent.setAttribute("bendrange", m_bendRange.load(std::memory_order_relaxed)); // optional: absent in older projects
 
 	if (m_plugin)
 	{
@@ -829,6 +1006,10 @@ void PrestigeInstrument::applySavedElement(const QDomElement& element)
 	const QDomElement uiNode = element.firstChildElement("ui");
 	m_uiEditorOpen = uiNode.attribute("editor") == QLatin1String("1");
 	m_uiParametersOpen = uiNode.attribute("parameters") == QLatin1String("1");
+
+	// Optional attribute, missing in older projects: the default applies then.
+	m_bendRange.store(qBound(kBendRangeMin, element.attribute("bendrange", QString::number(kBendRangeDefault)).toInt(), kBendRangeMax),
+		std::memory_order_relaxed);
 }
 
 void PrestigeInstrument::loadSettings(const QDomElement& thisElement)
@@ -1046,7 +1227,17 @@ PrestigeView::PrestigeView(Instrument* instrument, QWidget* parent) :
 	layout->addWidget(m_paramsButton, 3, 1);
 	layout->addWidget(m_warningLabel, 4, 0, 1, 2);
 	layout->addWidget(m_errorLabel, 5, 0, 1, 2);
-	layout->setRowStretch(6, 1);
+	auto* bendLabel = new QLabel(tr("Per-note bend range (semitones)"), this);
+	m_bendRangeSpin = new QSpinBox(this);
+	m_bendRangeSpin->setRange(PrestigeInstrument::kBendRangeMin, PrestigeInstrument::kBendRangeMax);
+	m_bendRangeSpin->setToolTip(tr("Used when the plugin has no per-note tuning: every note gets its own MIDI channel (MPE style) and piano-roll detuning is sent as pitch bend on it. Set this to the pitch-bend range the plugin applies to those channels, and switch the plugin MPE option on."));
+	connect(m_bendRangeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value)
+	{
+		if (m_pi) { m_pi->setBendRange(value); }
+	});
+	layout->addWidget(bendLabel, 6, 0);
+	layout->addWidget(m_bendRangeSpin, 6, 1);
+	layout->setRowStretch(7, 1);
 
 	if (m_pi)
 	{
@@ -1470,6 +1661,12 @@ void PrestigeView::updateLabels()
 
 	const bool loaded = m_pi->isPluginLoaded();
 	const bool hasSaved = m_pi->hasSavedPlugin();
+
+	if (m_bendRangeSpin && m_bendRangeSpin->value() != m_pi->bendRange())
+	{
+		const QSignalBlocker blocker(m_bendRangeSpin);
+		m_bendRangeSpin->setValue(m_pi->bendRange());
+	}
 
 	m_editorButton->setEnabled(loaded);
 	m_paramsButton->setEnabled(loaded);

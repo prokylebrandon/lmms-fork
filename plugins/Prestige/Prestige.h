@@ -40,6 +40,7 @@
 
 class QLabel;
 class QPushButton;
+class QSpinBox;
 class QTimer;
 class QWidget;
 
@@ -202,6 +203,17 @@ public:
 	QString savedPluginName() const { return m_savedName; }
 	QString savedPluginVendor() const { return m_savedVendor; }
 
+	/// Per-note pitch-bend range in semitones. Used only when per-note bend goes out as pitch bend on
+	/// per-note MIDI channels (MPE style) because the plugin has no tuning note expression. It must
+	/// equal the range the plugin applies to those channels (PRESTIGE cannot read it). The plugin
+	/// also needs its own MPE option switched on by the user. Saved as the optional project
+	/// attribute "bendrange"; projects without it load with the default.
+	static constexpr int kBendRangeMin = 1;
+	static constexpr int kBendRangeMax = 96;
+	static constexpr int kBendRangeDefault = 2;
+	int bendRange() const { return m_bendRange.load(std::memory_order_relaxed); }
+	void setBendRange(int semitones) { m_bendRange.store(qBound(kBendRangeMin, semitones, kBendRangeMax), std::memory_order_relaxed); }
+
 	/// One model per VST3 parameter of the currently loaded plugin, in
 	/// discovery order (NOT necessarily parameter-ID order). Empty when
 	/// no plugin is loaded. For the parameter-management UI and for LMMS
@@ -321,6 +333,15 @@ private:
 	/// Re-reads every model from the plugin; never writes back to it.
 	void onPluginParametersChanged();
 
+	/// Caller holds m_pluginMutex. Forget all per-note routing state (channels, owners, bend slots).
+	void resetNoteRoutingLocked();
+	/// Caller holds m_pluginMutex. Sends a MIDI event to the plugin; in MPE mode note events get a per-note channel.
+	void routeMidiEventLocked(const MidiEvent& event, f_cnt_t offset);
+	/// Caller holds m_pluginMutex. Picks a member channel 1..15 for a new note.
+	int allocateMpeChannelLocked();
+	/// Caller holds m_pluginMutex. Sends one note's bend to the plugin (tuning expression or per-note channel).
+	void forwardNoteBendLocked(int key, float semitones);
+
 	QMutex m_pluginMutex;
 
 	// Per-note pitch bend in semitones, indexed by the MIDI key the plugin received (= VST3 noteId).
@@ -328,6 +349,23 @@ private:
 	// forwards changes to the plugin and remembers what it sent in m_sentBend.
 	std::atomic<float> m_pendingBend[MidiMaxKey + 1] {};
 	float m_sentBend[MidiMaxKey + 1] {};
+
+	// Per-note bend routing. m_mpeBend is decided once after load (instantiatePlugin()): true when the
+	// plugin has no tuning note expression but maps pitch bend per channel. Then every note gets its own
+	// MIDI channel 1..15 (channel 0 stays the MPE master) and its bend goes out as pitch bend on it.
+	bool m_mpeBend = false;
+	std::atomic<int> m_bendRange { kBendRangeDefault };
+	// Per MIDI key: channel + 1 the held note on it was sent on (0 = key not held). Written under m_pluginMutex, read by playNote().
+	std::atomic<int> m_keyChannelPlus1[MidiMaxKey + 1] {};
+	// Per MIDI key: the NotePlayHandle that owns the bend slot (the newest note on the key, bound in its first
+	// playNote()). Only compared, never dereferenced.
+	std::atomic<const NotePlayHandle*> m_keyOwner[MidiMaxKey + 1] {};
+	// Channel table, guarded by m_pluginMutex. Stamp = last allocate/release time, used for least-recently-used choice.
+	bool m_channelHeld[MidiChannelCount] {};
+	bool m_channelBent[MidiChannelCount] {};
+	int m_channelKey[MidiChannelCount] {};
+	std::uint64_t m_channelStamp[MidiChannelCount] {};
+	std::uint64_t m_channelClock = 0;
 	QTimer* m_outputTimer = nullptr; // GUI-thread poll of plugin output values (meters, process() failures)
 	QMetaObject::Connection m_rateConnection; // AudioEngine::sampleRateChanged -> reconfigure the plugin
 	std::unique_ptr<Vst3PluginInstance> m_plugin;
@@ -415,6 +453,7 @@ private:
 	QPushButton* m_unloadButton;
 	QPushButton* m_editorButton;
 	QPushButton* m_paramsButton;
+QSpinBox* m_bendRangeSpin = nullptr;
 };
 
 } // namespace gui

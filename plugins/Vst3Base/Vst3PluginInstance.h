@@ -282,6 +282,12 @@ public:
      */
     void setNoteTuning(int noteId, float semitones);
 
+    /** True when the plugin lists the tuning note expression. Decided once while loading, in buildMidiMapping(). */
+    bool supportsNoteTuning() const { return m_hasTuningExpression; }
+
+    /** True when IMidiMapping maps pitch bend on more than one MIDI channel, which per-note bend over MIDI channels (MPE style) needs. Decided once, in buildMidiMapping(). */
+    bool supportsChannelPitchBend() const { return m_hasChannelPitchBend; }
+
     /**
      * Diagnostics only: number of MIDI events dropped because the lock-free
      * queue (see kQueueCapacity) was full when queueMidiEvent() was called.
@@ -665,6 +671,10 @@ private:
     // changed note into one tuning note-expression event.
     std::atomic<float> m_noteTuning[MidiMaxKey + 1] {};
     std::atomic<bool> m_noteTuningDirty[MidiMaxKey + 1] {};
+
+    // Capabilities found by buildMidiMapping() while loading (see supportsNoteTuning() / supportsChannelPitchBend()).
+    bool m_hasTuningExpression = false;
+    bool m_hasChannelPitchBend = false;
 };
 
 } // namespace lmms

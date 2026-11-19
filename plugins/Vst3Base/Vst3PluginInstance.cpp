@@ -1049,6 +1049,7 @@ void Vst3PluginInstance::buildMidiMapping()
                 if (nec->getNoteExpressionInfo(0, 0, i, info) == Steinberg::kResultOk && info.typeId == Steinberg::Vst::kTuningTypeID) { diagTuning = true; }
             }
         }
+        m_hasTuningExpression = diagTuning;
         qWarning("Vst3PluginInstance: %s note expression: INoteExpressionController=%d, types=%d, tuning=%d, IMidiMapping=%d", qPrintable(m_name), nec ? 1 : 0, diagTypes, diagTuning ? 1 : 0, mapping ? 1 : 0);
     }
     if (!mapping) { return; }
@@ -1090,6 +1091,7 @@ void Vst3PluginInstance::buildMidiMapping()
     {
         int diagBendChannels = 0;
         for (const auto bendId : m_pitchBendMap) { if (bendId != none) { ++diagBendChannels; } }
+        m_hasChannelPitchBend = diagBendChannels > 1;
         qWarning("Vst3PluginInstance: %s IMidiMapping: pitch bend mapped on %d channel(s), CC table %s", qPrintable(m_name), diagBendChannels, m_midiMap.empty() ? "empty" : "present");
     }
 }
@@ -1105,7 +1107,7 @@ bool Vst3PluginInstance::mapMidiToParameter(const MidiEvent& event, Vst3ParamID&
         if (bendId == static_cast<Vst3ParamID>(Steinberg::Vst::kNoParamId)) { return false; }
         id = bendId;
         // LMMS carries pitch bend as an unsigned 14-bit value: 0..16383, centre 8192.
-        value = std::min(1.0, std::max(0.0, static_cast<double>(event.pitchBend()) / 16383.0));
+        value = event.pitchBend() == 8192 ? 0.5 : std::min(1.0, std::max(0.0, static_cast<double>(event.pitchBend()) / 16383.0)); // 8192 is exact centre
         return true;
     }
     if (m_midiMap.empty() || event.type() != MidiControlChange) { return false; }
@@ -1182,15 +1184,17 @@ void Vst3PluginInstance::processAudio(const float* inputs,
 
     // ---- De-interleave input (L R L R …) → planar (L… R…) ----
     // ---- Per-note tuning (piano-roll pitch bend): one note-expression event per changed note ----
-    // Placed after the note events, at the last event offset, so a bend never precedes its NoteOn.
-    const Steinberg::int32 tuningOffset = eventList.lastSampleOffset();
+    // Each tuning event sits at the offset of its own NoteOn (0 when the note began in an earlier block),
+    // after that NoteOn in the list; the sort below keeps the whole list in ascending offset order.
     for (int noteId = 0; noteId <= MidiMaxKey; ++noteId)
     {
         if (m_noteTuningDirty[noteId].exchange(false, std::memory_order_acquire))
         {
-            eventList.addNoteTuning(noteId, m_noteTuning[noteId].load(std::memory_order_relaxed), tuningOffset);
+            eventList.addNoteTuning(noteId, m_noteTuning[noteId].load(std::memory_order_relaxed), eventList.noteOnOffset(noteId));
         }
     }
+
+    eventList.sortBySampleOffset();
 
     const std::size_t nf = static_cast<std::size_t>(numFrames);
     const std::size_t inCh  = static_cast<std::size_t>(m_numInputChannels);
