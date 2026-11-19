@@ -1,6 +1,13 @@
 ---
 name: build
-'on': [push, pull_request]
+'on':
+  push:
+    branches-ignore:
+      - 'pr-*'
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   linux-x86_64:
     name: linux-x86_64
@@ -102,7 +109,7 @@ jobs:
           echo "[ccache stats]"
           ccache --show-stats
         env:
-          CCACHE_MAXSIZE: 500M
+          CCACHE_MAXSIZE: 2000M
       - name: Save ccache data
         if: ${{ always() }}
         uses: actions/cache/save@v6
@@ -200,7 +207,7 @@ jobs:
           echo "[ccache stats]"
           ccache --show-stats
         env:
-          CCACHE_MAXSIZE: 500M
+          CCACHE_MAXSIZE: 2000M
       - name: Save ccache data
         if: ${{ always() }}
         uses: actions/cache/save@v6
@@ -309,7 +316,7 @@ jobs:
           echo "[ccache stats]"
           ccache --show-stats --verbose
         env:
-          CCACHE_MAXSIZE: 500MB
+          CCACHE_MAXSIZE: 2000MB
       - name: Save ccache data
         if: ${{ always() }}
         uses: actions/cache/save@v6
@@ -355,7 +362,7 @@ jobs:
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)" | tee -a "$GITHUB_ENV"
       - name: Cache vcpkg dependencies
         id: cache-deps
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           key: vcpkg-mingw${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
@@ -389,6 +396,12 @@ jobs:
         env:
           should_install_manifest:
             ${{ steps.cache-deps.outputs.cache-hit == 'true' && 'NO' || 'YES' }}
+      - name: Save vcpkg dependencies
+        if: ${{ steps.cache-deps.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          key: vcpkg-mingw${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
+          path: build/vcpkg_installed
       - name: Build
         run: cmake --build build
       - name: Package
@@ -407,7 +420,7 @@ jobs:
           echo "[ccache stats]"
           ccache --show-stats
         env:
-          CCACHE_MAXSIZE: 500M
+          CCACHE_MAXSIZE: 2000M
       - name: Save ccache data
         if: ${{ always() }}
         uses: actions/cache/save@v6
@@ -434,7 +447,7 @@ jobs:
             || git submodule update --init --recursive --jobs 8
       - name: Cache vcpkg dependencies
         id: cache-deps
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           key: vcpkg-msvc-x86_64-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
@@ -486,6 +499,12 @@ jobs:
         env:
           should_install_manifest:
             ${{ steps.cache-deps.outputs.cache-hit == 'true' && 'NO' || 'YES' }}
+      - name: Save vcpkg dependencies
+        if: ${{ steps.cache-deps.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          key: vcpkg-msvc-x86_64-${{ hashFiles('vcpkg.json') }}
+          path: build\vcpkg_installed
       - name: Build
         run: cmake --build build
       - name: Run tests
@@ -508,7 +527,7 @@ jobs:
           echo "[ccache stats]"
           ccache --show-stats --verbose
         env:
-          CCACHE_MAXSIZE: 500MB
+          CCACHE_MAXSIZE: 2000MB
       - name: Save ccache data
         if: ${{ always() }}
         uses: actions/cache/save@v6
@@ -588,7 +607,7 @@ jobs:
           echo "[ccache stats]"
           /clang64/bin/ccache.exe --show-stats --verbose
         env:
-          CCACHE_MAXSIZE: 500MB
+          CCACHE_MAXSIZE: 2000MB
       - name: Save ccache data
         if: ${{ always() }}
         uses: actions/cache/save@v6
