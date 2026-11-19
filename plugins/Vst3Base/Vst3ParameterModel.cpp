@@ -1,0 +1,196 @@
+/*
+ * Vst3ParameterModel.cpp - bridges one VST3 parameter to LMMS's automation system
+ *
+ * Copyright (c) 2024 LMMS contributors
+ *
+ * This file is part of LMMS - https://lmms.io
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public
+ * License along with this program (see COPYING); if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+ * Boston, MA 02110-1301 USA.
+ *
+ */
+
+#include "Vst3ParameterModel.h"
+
+#include <QDomDocument>
+#include <QDomElement>
+
+#include "Vst3PluginInstance.h"
+
+namespace lmms
+{
+
+namespace
+{
+
+// VST3's stepCount convention (see Vst3Parameter.h): 0 = continuous,
+// N = N+1 discrete steps. A continuous parameter still gets a real step
+// size rather than 0, so the knob/slider LMMS builds on top of this model
+// feels smooth without being literally unquantised -- the same reasoning
+// LadspaControl applies to a LADSPA float port's range.
+float stepSizeFor(const Vst3Parameter& info)
+{
+	return info.stepCount > 0 ? 1.0f / static_cast<float>(info.stepCount) : 0.001f;
+}
+
+} // namespace
+
+Vst3ParameterModel::Vst3ParameterModel(Model* parent, Vst3PluginInstance* plugin,
+	const Vst3Parameter& info, double initialValue) :
+	Model(parent),
+	m_plugin(plugin),
+	m_info(info),
+	m_valueModel(static_cast<float>(initialValue), 0.0f, 1.0f, stepSizeFor(info),
+		this, info.title)
+{
+	m_valueModel.setInitValue(static_cast<float>(info.defaultNormalisedValue));
+
+	// Read-only parameters (meters, mostly) still get a model, so the
+	// parameter UI can display them, but onModelChanged() below refuses to
+	// write them back into the plugin.
+	connect(&m_valueModel, &FloatModel::dataChanged, this, &Vst3ParameterModel::onModelChanged);
+}
+
+QString Vst3ParameterModel::formattedValue() const
+{
+	if (!m_plugin)
+	{
+		return {};
+	}
+	return m_plugin->parameterDisplayString(m_info.id, m_valueModel.value());
+}
+
+void Vst3ParameterModel::setValueFromPlugin(double normalisedValue)
+{
+	m_settingFromPlugin = true;
+	m_valueModel.setValue(static_cast<float>(normalisedValue));
+	m_settingFromPlugin = false;
+}
+
+void Vst3ParameterModel::syncFromPlugin()
+{
+	if (!m_plugin)
+	{
+		return;
+	}
+
+	const auto current = m_plugin->getParameterNormalized(m_info.id);
+	if (!current)
+	{
+		return;
+	}
+
+	// setValue() adds an undo checkpoint per call unless journalling is off
+	// (AutomatableModel::setValue()). A resync is not a user edit, and a
+	// preset load would otherwise bury the undo stack under one entry per
+	// parameter.
+	const bool wasJournalling = m_valueModel.testAndSetJournalling(false);
+	setValueFromPlugin(*current);
+	m_valueModel.setJournalling(wasJournalling);
+}
+
+void Vst3ParameterModel::onModelChanged()
+{
+	// Two independent reasons this must not reach the plugin:
+	//  - m_settingFromPlugin: the plugin's own editor is the origin of
+	//    this value; forwarding it back would re-enter the controller
+	//    from inside its own performEdit() (see
+	//    Vst3PluginInstance::onControllerEdit()'s matching comment).
+	//  - !m_plugin: the plugin has already been (or is being) torn down
+	//    -- see detachPlugin() -- so there is nothing left to forward to.
+	if (m_settingFromPlugin || !m_plugin)
+	{
+		return;
+	}
+
+	// Respect the plugin's own read-only flag: LMMS must never write to
+	// a parameter the plugin has marked as host-unwritable (typically a
+	// meter), even though it still gets a model so the UI can show it.
+	if (m_info.isReadOnly)
+	{
+		return;
+	}
+
+	m_plugin->queueParameterChange(m_info.id, m_valueModel.value());
+}
+
+void Vst3ParameterModel::saveSettings(QDomDocument& doc, QDomElement& parametersElement)
+{
+	QDomElement paramElement = doc.createElement("param");
+	// The VST3 parameter ID, not this model's position in the owner's
+	// list -- positions shift across plugin versions, IDs are the
+	// plugin's own stable identity (see Vst3Parameter.h /
+	// Vst3PluginInstance's discoverClasses()/cid handling for the same
+	// rule applied to class identity).
+	paramElement.setAttribute("id", static_cast<qulonglong>(m_info.id));
+	m_valueModel.saveSettings(doc, paramElement, "value");
+	parametersElement.appendChild(paramElement);
+}
+
+void Vst3ParameterModel::loadSettings(const QDomElement& paramElement, bool applyValueToPlugin)
+{
+	// AutomatableModel::loadSettings() always ends by calling setValue()
+	// on the saved (or automation-clip-derived) value -- there is no
+	// finer-grained API to load just the automation-clip/controller-
+	// connection metadata without also snapping the value. For a normal
+	// parameter that's exactly right: it's how a saved value survives a
+	// reload at all. For isProgramChange it is wrong: applySavedElement()/
+	// PrestigeInstrument::applySavedElement() already called
+	// restoreState()/restoreComponentState() on the plugin's own state
+	// blob just before this runs (see the header's doc comment and Task A
+	// of PRESTIGE-Phase-4c-State-Fix-and-Knobs.md), and that blob is the
+	// plugin's authoritative record of which program/preset is loaded.
+	// Re-applying a stale saved program index on top of it would silently
+	// undo the just-restored preset with no warning -- this was the root
+	// cause of "presets don't survive a project reload" for both hosts.
+	//
+	// m_settingFromPlugin already exists for the opposite direction
+	// (plugin editor -> host must not re-enter the plugin); reusing it
+	// here suppresses onModelChanged()'s forward-to-plugin the same way,
+	// while still letting setValue() run so the model's automation clip
+	// and controller connection are restored like any other parameter.
+	// An automation clip on a program-change parameter still drives the
+	// plugin normally during playback -- only this one-time load-time
+	// snap is skipped.
+	if (m_info.isProgramChange || !applyValueToPlugin)
+	{
+		m_settingFromPlugin = true;
+		m_valueModel.loadSettings(paramElement, "value");
+		m_settingFromPlugin = false;
+
+		// The saved index was deliberately not forwarded, so the plugin is
+		// still on whatever program its own restored state selected -- the
+		// model now disagrees with it. Pull the plugin's value back in so
+		// the model (and any knob bound to it) shows what the plugin is
+		// really playing, and so the next save writes a truthful value.
+		syncFromPlugin();
+	}
+	else
+	{
+		m_valueModel.loadSettings(paramElement, "value");
+	}
+
+	// NOT independently verified: whether the owner's loadSettings() is
+	// guaranteed to run before the rest of the project's AutomationClips
+	// resolve the journalling ids they point at (the generic mechanism
+	// every other AutomatableModel in LMMS relies on for automation to
+	// reattach after a project reload) was not checked against
+	// ProjectJournal's id-remapping code. If a MIDI CC / automation-clip
+	// connection on a parameter doesn't survive a save/reload round trip,
+	// this ordering assumption -- not the value restore above, which
+	// doesn't depend on it -- is the first thing to check.
+}
+
+} // namespace lmms

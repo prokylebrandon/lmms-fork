@@ -24,24 +24,24 @@
 
 #include "TrackOperationsWidget.h"
 
-#include <QBoxLayout>
+#include <QCheckBox>
+#include <QHBoxLayout>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
-#include <QCheckBox>
 
+#include "AutomatableButton.h"
 #include "AutomationClip.h"
 #include "AutomationTrackView.h"
 #include "ColorChooser.h"
 #include "ConfigManager.h"
-#include "DataFile.h"
 #include "embed.h"
 #include "Engine.h"
 #include "InstrumentTrackView.h"
+#include "lmms_math.h"
 #include "KeyboardShortcuts.h"
-#include "PixmapButton.h"
 #include "Song.h"
 #include "StringPairDrag.h"
 #include "Track.h"
@@ -52,15 +52,9 @@
 namespace lmms::gui
 {
 
-/*! \brief Create a new trackOperationsWidget
- *
- * The trackOperationsWidget is the grip and the mute button of a track.
- *
- * \param parent the trackView to contain this widget
- */
-TrackOperationsWidget::TrackOperationsWidget( TrackView * parent ) :
-	QWidget( parent ),             /*!< The parent widget */
-	m_trackView( parent )          /*!< The parent track view */
+TrackOperationsWidget::TrackOperationsWidget(TrackView* parent)
+	: QWidget(parent)
+	, m_trackView(parent)
 {
 	setToolTip(tr("Press <%1> while clicking on move-grip "
 				"to begin a new drag'n'drop action." ).arg(UI_CTRL_KEY) );
@@ -76,7 +70,7 @@ TrackOperationsWidget::TrackOperationsWidget( TrackView * parent ) :
 	layout->setSpacing(0);
 	layout->setAlignment(Qt::AlignTop);
 
-	m_trackGrip = new TrackGrip(m_trackView->getTrack(), this);
+	m_trackGrip = new TrackGrip(m_trackView, this);
 	layout->addWidget(m_trackGrip);
 
 	// This widget holds the gear icon and the mute and solo
@@ -90,6 +84,7 @@ TrackOperationsWidget::TrackOperationsWidget( TrackView * parent ) :
 	m_trackOps->setFocusPolicy( Qt::NoFocus );
 	m_trackOps->setMenu( toMenu );
 	m_trackOps->setToolTip(tr("Actions"));
+	m_trackOps->setCursor(Qt::PointingHandCursor);
 
 	m_muteBtn = new AutomatableButton(operationsWidget, tr("Mute"));
 	m_muteBtn->setCheckable(true);
@@ -118,42 +113,6 @@ TrackOperationsWidget::TrackOperationsWidget( TrackView * parent ) :
 }
 
 
-/*! \brief Respond to trackOperationsWidget mouse events
- *
- *  If it's the left mouse button, and Ctrl is held down, and we're
- *  not a Pattern Editor track, then start a new drag event to
- *  copy this track.
- *
- *  Otherwise, ignore all other events.
- *
- *  \param me The mouse event to respond to.
- */
-void TrackOperationsWidget::mousePressEvent( QMouseEvent * me )
-{
-	if (me->button() == Qt::LeftButton && me->modifiers() & KBD_COPY_MODIFIER &&
-		m_trackView->getTrack()->type() != Track::Type::Pattern)
-	{
-		DataFile dataFile( DataFile::Type::DragNDropData );
-		m_trackView->getTrack()->saveState( dataFile, dataFile.content() );
-		new StringPairDrag( QString( "track_%1" ).arg(
-					static_cast<int>(m_trackView->getTrack()->type()) ),
-			dataFile.toString(), m_trackView->getTrackSettingsWidget()->grab(),
-									this );
-	}
-	else if( me->button() == Qt::LeftButton )
-	{
-		// track-widget (parent-widget) initiates track-move
-		me->ignore();
-	}
-}
-
-
-/*!
- * \brief Repaint the trackOperationsWidget
- *
- * Only things that's done for now is to paint the background
- * with the brush of the window from the palette.
- */
 void TrackOperationsWidget::paintEvent(QPaintEvent*)
 {
 	QPainter p( this );
@@ -162,7 +121,6 @@ void TrackOperationsWidget::paintEvent(QPaintEvent*)
 }
 
 
-/*! \brief Show a message box warning the user that this track is about to be closed */
 bool TrackOperationsWidget::confirmRemoval()
 {
 	bool needConfirm = ConfigManager::inst()->value("ui", "trackdeletionwarning", "1").toInt();
@@ -174,10 +132,16 @@ bool TrackOperationsWidget::confirmRemoval()
 	QString messageTitleRemoveTrack = tr("Confirm removal");
 	QString askAgainText = tr("Don't ask again");
 	auto askAgainCheckBox = new QCheckBox(askAgainText, nullptr);
-	connect(askAgainCheckBox, &QCheckBox::stateChanged, [](int state){
+	auto onCheckedStateChanged = [](auto state){
 		// Invert button state, if it's checked we *shouldn't* ask again
-		ConfigManager::inst()->setValue("ui", "trackdeletionwarning", state ? "0" : "1");
-	});
+		ConfigManager::inst()->setValue("ui", "trackdeletionwarning", state != Qt::Unchecked ? "0" : "1");
+	};
+
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 7, 0))
+	connect(askAgainCheckBox, &QCheckBox::checkStateChanged, onCheckedStateChanged);
+#else
+	connect(askAgainCheckBox, &QCheckBox::stateChanged, onCheckedStateChanged);
+#endif
 
 	QMessageBox mb;
 	mb.setText(messageRemoveTrack);
@@ -191,9 +155,7 @@ bool TrackOperationsWidget::confirmRemoval()
 	return mb.exec() == QMessageBox::Ok;
 }
 
-/*! \brief Clone this track
- *
- */
+
 void TrackOperationsWidget::cloneTrack()
 {
 	TrackContainerView *tcView = m_trackView->trackContainerView();
@@ -217,7 +179,6 @@ void TrackOperationsWidget::cloneTrack()
 }
 
 
-/*! \brief Clear this track - clears all Clips from the track */
 void TrackOperationsWidget::clearTrack()
 {
 	Track * t = m_trackView->getTrack();
@@ -228,9 +189,6 @@ void TrackOperationsWidget::clearTrack()
 }
 
 
-/*! \brief Remove this track from the track list
- *
- */
 void TrackOperationsWidget::removeTrack()
 {
 	if (confirmRemoval())
@@ -263,7 +221,7 @@ void TrackOperationsWidget::resetTrackColor()
 
 void TrackOperationsWidget::randomizeTrackColor()
 {
-	QColor buffer = ColorChooser::getPalette( ColorChooser::Palette::Track )[ rand() % 48 ];
+	QColor buffer = ColorChooser::getPalette(ColorChooser::Palette::Track)[fastRand(48)];
 	auto track = m_trackView->getTrack();
 	track->addJournalCheckPoint();
 	track->setColor(buffer);
@@ -282,14 +240,6 @@ void TrackOperationsWidget::resetClipColors()
 }
 
 
-/*! \brief Update the trackOperationsWidget context menu
- *
- *  For all track types, we have the Clone and Remove options.
- *  For instrument-tracks we also offer the MIDI-control-menu
- *  For automation tracks, extra options: turn on/off recording
- *  on all Clips (same should be added for sample tracks when
- *  sampletrack recording is implemented)
- */
 void TrackOperationsWidget::updateMenu()
 {
 	QMenu * toMenu = m_trackOps->menu();

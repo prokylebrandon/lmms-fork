@@ -23,6 +23,7 @@
  */
 
 #include "GuiApplication.h"
+#include "DiscordPresence.h"
 
 #include "lmmsversion.h"
 
@@ -44,11 +45,11 @@
 #include <QDebug>
 #include <QDir>
 #include <QtGlobal>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QSplashScreen>
 #include <QSocketNotifier>
-#include <csignal>
 
 #ifdef LMMS_BUILD_WIN32
 #include <io.h>
@@ -196,6 +197,9 @@ GuiApplication::GuiApplication()
 	m_mainWindow->finalize();
 
 	m_loadingProgressLabel = nullptr;
+
+	m_discordPresence = new DiscordPresence(this);
+	m_discordPresence->applySettings();
 }
 
 GuiApplication::~GuiApplication()
@@ -256,13 +260,6 @@ void GuiApplication::childDestroyed(QObject *obj)
 	}
 }
 
-/** \brief Called from main when SIGINT is fired
- *
- * Unix signal handlers can only call async-signal-safe functions:
- *  write(fd) --> QSocketNotifier --> SLOT sigintOccurred()
- *
- * See https://doc.qt.io/qt-6/unix-signals.html
- */
 void GuiApplication::sigintHandler(int)
 {
 #ifdef LMMS_BUILD_WIN32
@@ -303,14 +300,11 @@ void GuiApplication::sigintOccurred()
 }
 
 #ifdef LMMS_BUILD_WIN32
-/*!
- * @brief Returns the Windows System font.
- */
 QFont GuiApplication::getWin32SystemFont()
 {
-	NONCLIENTMETRICS metrics = { sizeof( NONCLIENTMETRICS ) };
-	SystemParametersInfo( SPI_GETNONCLIENTMETRICS, sizeof( NONCLIENTMETRICS ), &metrics, 0 );
-	int pointSize = metrics.lfMessageFont.lfHeight;
+	auto metrics = NONCLIENTMETRICSW{ .cbSize = sizeof(NONCLIENTMETRICSW) };
+	SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICSW), &metrics, 0);
+	int pointSize = static_cast<int>(metrics.lfMessageFont.lfHeight);
 	if ( pointSize < 0 )
 	{
 		// height is in pixels, convert to points
@@ -319,7 +313,7 @@ QFont GuiApplication::getWin32SystemFont()
 		ReleaseDC( nullptr, hDC );
 	}
 
-	return QFont( QString::fromUtf8( metrics.lfMessageFont.lfFaceName ), pointSize );
+	return QFont{QString::fromWCharArray(metrics.lfMessageFont.lfFaceName), pointSize};
 }
 #endif
 

@@ -40,6 +40,7 @@
 
 #include "base64.h"
 #include "ConfigManager.h"
+#include "DeprecationHelper.h"
 #include "Effect.h"
 #include "embed.h"
 #include "GuiApplication.h"
@@ -137,6 +138,8 @@ DataFile::DataFile( Type type ) :
 	root.setAttribute( "type", typeName( type ) );
 	root.setAttribute( "creator", "LMMS" );
 	root.setAttribute( "creatorversion", LMMS_VERSION );
+	root.setAttribute("creatorplatform", QSysInfo::kernelType());
+	root.setAttribute("creatorplatformtype", QSysInfo::productType());
 	appendChild( root );
 
 	m_head = createElement( "head" );
@@ -524,20 +527,6 @@ bool DataFile::copyResources(const QString& resourcesDir)
 
 
 
-/**
- * @brief This recursive method will go through all XML nodes of the DataFile
- *        and check whether any of them have local paths. If they are not on
- *        our list of elements that can have local paths we return true,
- *        indicating that we potentially have plugins with local paths that
- *        would be a security issue. The Song class can then abort loading
- *        this project.
- * @param parent The parent node being iterated. When called
- *        without arguments, this will be an empty element that will be
- *        ignored (since the second parameter will be true).
- * @param firstCall Defaults to true, and indicates to this recursive
- *        method whether this is the first call. If it is it will use the
- *        root element as the parent.
- */
 bool DataFile::hasLocalPlugins(QDomElement parent /* = QDomElement()*/, bool firstCall /* = true*/) const
 {
 	// If this is the first iteration of the recursion we use the root element
@@ -1027,19 +1016,19 @@ void DataFile::upgrade_0_4_0_beta1()
 		if( !k.isEmpty() )
 		{
 			const QList<QVariant> l =
-				base64::decode( k, QVariant::List ).toList();
+				base64::decode(k, QMetaType::QVariantList).toList();
 			if( !l.isEmpty() )
 			{
 				QString name = l[0].toString();
 				QVariant u = l[1];
 				EffectKey::AttributeMap m;
 				// VST-effect?
-				if( u.type() == QVariant::String )
+				if (typeId(u) == QMetaType::QString)
 				{
 					m["file"] = u.toString();
 				}
 				// LADSPA-effect?
-				else if( u.type() == QVariant::StringList )
+				else if (typeId(u) == QMetaType::QStringList)
 				{
 					const QStringList sl = u.toStringList();
 					m["plugin"] = sl.value( 0 );
@@ -1801,11 +1790,6 @@ void DataFile::upgrade_fixCMTDelays()
 }
 
 
-/** \brief Note range has been extended to match MIDI specification
- *
- * The non-standard note range previously affected all MIDI-based instruments
- * except OpulenZ, and made them sound an octave lower than they should (#1857).
- */
 void DataFile::upgrade_extendedNoteRange()
 {
 	auto root = documentElement();
@@ -1815,11 +1799,6 @@ void DataFile::upgrade_extendedNoteRange()
 }
 
 
-/** \brief TripleOscillator switched to using high-quality, alias-free oscillators by default
- *
- * Older projects were made without this feature and would sound differently if loaded
- * with the new default setting. This upgrade routine preserves their old behavior.
- */
 void DataFile::upgrade_defaultTripleOscillatorHQ()
 {
 	QDomNodeList tripleoscillators = elementsByTagName("tripleoscillator");
@@ -2008,8 +1987,6 @@ void DataFile::upgrade_loopsRename()
 	mapSrcAttributeInElementsWithResources(namesToNamesWithBPMsMap);
 }
 
-//! Update MIDI CC indexes, so that they are counted from 0. Older releases of LMMS
-//! count the CCs from 1.
 void DataFile::upgrade_midiCCIndexing()
 {
 	static constexpr std::array attributesToUpdate{"inputcontroller", "outputcontroller"};
@@ -2100,6 +2077,8 @@ void DataFile::upgrade()
 	documentElement().setAttribute( "type", typeName( type() ) );
 	documentElement().setAttribute( "creator", "LMMS" );
 	documentElement().setAttribute( "creatorversion", LMMS_VERSION );
+	documentElement().setAttribute("creatorplatform", QSysInfo::kernelType());
+	documentElement().setAttribute("creatorplatformtype", QSysInfo::productType());
 
 	if( type() == Type::SongProject || type() == Type::SongProjectTemplate )
 	{
@@ -2124,13 +2103,13 @@ void DataFile::loadData( const QByteArray & _data, const QString & _sourceFile )
 {
 	QString errorMsg;
 	int line = -1, col = -1;
-	if( !setContent( _data, &errorMsg, &line, &col ) )
+	if (!lmms::setContent(*this, _data, &errorMsg, &line, &col))
 	{
 		// parsing failed? then try to uncompress data
 		QByteArray uncompressed = qUncompress( _data );
 		if( !uncompressed.isEmpty() )
 		{
-			if( setContent( uncompressed, &errorMsg, &line, &col ) )
+			if (lmms::setContent(*this, uncompressed, &errorMsg, &line, &col))
 			{
 				line = col = -1;
 			}

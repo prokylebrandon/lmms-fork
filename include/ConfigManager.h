@@ -40,8 +40,6 @@ namespace lmms
 {
 
 
-class Engine;
-
 const QString PROJECTS_PATH = "projects/";
 const QString TEMPLATE_PATH = "templates/";
 const QString PRESETS_PATH = "presets/";
@@ -132,6 +130,11 @@ public:
 	const QString & vstDir() const
 	{
 		return m_vstDir;
+	}
+
+	const QString & vst3Dir() const
+	{
+		return m_vst3Dir;
 	}
 
 	const QString & ladspaDir() const
@@ -258,6 +261,7 @@ public:
 
 	void setWorkingDir(const QString & workingDir);
 	void setVSTDir(const QString & vstDir);
+	void setVST3Dir(const QString & vst3Dir);
 	void setLADSPADir(const QString & ladspaDir);
 	void setSF2Dir(const QString & sf2Dir);
 	void setSF2File(const QString & sf2File);
@@ -291,6 +295,7 @@ private:
 	QString m_workingDir;
 	QString m_dataDir;
 	QString m_vstDir;
+	QString m_vst3Dir;
 	QString m_ladspaDir;
 	QString m_sf2Dir;
 #ifdef LMMS_HAVE_FLUIDSYNTH

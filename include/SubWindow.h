@@ -34,23 +34,19 @@
 
 class QGraphicsDropShadowEffect;
 class QLabel;
-class QMoveEvent;
 class QPushButton;
-class QResizeEvent;
+class QTimer;
 class QWidget;
 
 namespace lmms::gui
 {
 
 
-/**
- * @brief The SubWindow class
- * 
- *  Because of a bug in the QMdiSubWindow class to save the right position and size
- *  of a subwindow in a project and because of the inability
- *  for cusomizing the title bar appearance, lmms implements its own subwindow
- *  class.
- */
+
+//! @brief The SubWindow class
+//! 
+//! Because of a bug in the QMdiSubWindow class to save the right position and size of a subwindow in a project and
+//! because of the inability for customizing the title bar appearance, lmms implements its own subwindow class.
 class LMMS_EXPORT SubWindow : public QMdiSubWindow
 {
 	Q_OBJECT
@@ -65,24 +61,64 @@ public:
 	QBrush activeColor() const;
 	QColor textShadowColor() const;
 	QColor borderColor() const;
+	QMargins decorationMargins() const;
 	void setActiveColor( const QBrush & b );
 	void setTextShadowColor( const QColor &c );
 	void setBorderColor( const QColor &c );
 	int titleBarHeight() const;
 	int frameWidth() const;
+	bool isDetachable() const;
+	void setDetachable(bool on);
+	bool isDetached() const;
+	void setDetached(bool on);
 
 	// TODO Needed to update the title bar when replacing instruments.
 	// Update works automatically if QMdiSubWindows are used.
 	void updateTitleBar();
 
+public slots:
+	void detach();
+	void attach();
+	void setVisible(bool visible) override;
+
 protected:
 	// hook the QWidget move/resize events to update the tracked geometry
-	void moveEvent( QMoveEvent * event ) override;
-	void resizeEvent( QResizeEvent * event ) override;
-	void paintEvent( QPaintEvent * pe ) override;
-	void changeEvent( QEvent * event ) override;
 
-	QPushButton* addTitleButton(const std::string& iconName, const QString& toolTip);
+	//! Overrides the QMdiSubWindow::moveEvent() for saving the position of the subwindow into m_trackedNormalGeom. This
+	//! position will be saved with the project because of an Qt bug which doesn't save the right position.
+	//!
+	//! @see [QTBUG-256](https://bugreports.qt.io/browse/QTBUG-256)
+	// TODO: @param event
+	void moveEvent(QMoveEvent* event) override;
+
+	//! At first we give the event to QMdiSubWindow::resizeEvent() which handles the event on its behavior.
+	//!
+	//! On every resize event we have to adjust our title label.
+	//!
+	//! At last we store the current size into m_trackedNormalGeom. This size will be saved with the project because of an
+	//! Qt bug which doesn't save the right size.
+	//!
+	//! @see [QTBUG-256](https://bugreports.qt.io/browse/QTBUG-256)
+	// TODO: @param event
+	void resizeEvent(QResizeEvent* event) override;
+
+	//! @brief SubWindow::paintEvent
+	//!
+	//! This draws our new title bar with custom colors and draws a window icon on the left upper corner.
+	void paintEvent(QPaintEvent* pe) override;
+
+	//! @brief Triggers if the window title changes and calls adjustTitleBar().
+	// TODO: @param event
+	void changeEvent(QEvent* event) override;
+
+	void showEvent(QShowEvent* e) override;
+
+	//! @brief Override of QMdiSubWindow's event filter.
+	//!
+	//! This is not how regular eventFilters work, it is never installed explicitly. Instead, it is installed by Qt and
+	//! conveniently installs itself onto the child widget. Despite relying on internal implementation details, as of
+	//! writing this it seems to be the best way to do so as soon as the widget is set.
+	bool eventFilter(QObject* obj, QEvent* event) override;
 
 signals:
 	void focusLost();
@@ -91,8 +127,10 @@ private:
 	const QSize m_buttonSize;
 	const int m_titleBarHeight;
 	QPushButton * m_closeBtn;
+	QPushButton * m_minimizeBtn;
 	QPushButton * m_maximizeBtn;
 	QPushButton * m_restoreBtn;
+	QPushButton* m_detachBtn;
 	QBrush m_activeColor;
 	QColor m_textShadowColor;
 	QColor m_borderColor;
@@ -101,12 +139,38 @@ private:
 	QLabel * m_windowTitle;
 	QGraphicsDropShadowEffect * m_shadow;
 	bool m_hasFocus;
+	bool m_isDetachable;
+	QTimer* m_resizeCursorTimer;
 
+	//! @brief Stores the given text into the given label.
+	//!
+	//! Shorts the text if it's too big for the labels width and adds three dots (...)
+	//!
+	//! @param label Holds a pointer to the QLabel
+	//! @param text The text which will be stored (and if needed broken down) into the QLabel.
 	static void elideText( QLabel *label, QString text );
+
+	//! Our title bar needs buttons for maximize/restore and close in the right upper corner.
+	//! We check if the subwindow is maximizable and put the buttons on the right positions.
+	//! At next we calculate the width of the title label and call elideText() for adding
+	//! the window title to m_windowTitle (which is a QLabel)
 	void adjustTitleBar();
 
 private slots:
 	void focusChanged( QMdiSubWindow * subWindow );
+
+	//! @brief Clears a resize cursor left over from hovering an edge/corner
+	//! if the mouse is no longer actually near one.
+	//!
+	//! Works around a bug where a native child window sitting directly under
+	//! this window's title bar (see PrestigeView::openEditorWindow(), which
+	//! embeds a VST3 plugin editor's own HWND this way) can swallow the
+	//! mouse-move Qt would otherwise use to notice the pointer left the
+	//! resize margin, leaving the resize cursor stuck. Runs on a timer
+	//! rather than reacting to any specific event, since it is exactly the
+	//! event delivery for that native area that is unreliable here -- see
+	//! the implementation's comment for the full reasoning.
+	void checkResizeCursorStuck();
 };
 
 

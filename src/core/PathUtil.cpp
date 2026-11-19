@@ -1,3 +1,27 @@
+/*
+ * PathUtil.cpp
+ *
+ * Copyright (c) 2019-2022 Spekular <Spekularr@gmail.com>
+ *
+ * This file is part of LMMS - https://lmms.io
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public
+ * License along with this program (see COPYING); if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+ * Boston, MA 02110-1301 USA.
+ *
+ */
+
 #include "PathUtil.h"
 
 #include <QDir>
@@ -5,6 +29,8 @@
 
 #include "ConfigManager.h"
 #include "Engine.h"
+#include "lmmsconfig.h" // IWYU pragma: keep
+#include "IoHelper.h" // IWYU pragma: keep
 #include "Song.h"
 
 namespace lmms::PathUtil
@@ -97,12 +123,14 @@ namespace lmms::PathUtil
 		}
 	}
 
-	Base baseLookup(const QString & path)
+	Base baseLookup(const QString& input)
 	{
+		if (input.isEmpty()) { return Base::Absolute; };
+
 		for (auto base: relativeBases)
 		{
 			QString prefix = basePrefix(base);
-			if ( path.startsWith(prefix) ) { return base; }
+			if (input.startsWith(prefix)) { return base; }
 		}
 		return Base::Absolute;
 	}
@@ -110,63 +138,84 @@ namespace lmms::PathUtil
 
 
 
-	QString stripPrefix(const QString & path)
+	// Enforce forward slashes for cross-platform compatibility due to limitations of QDir::fromNativeSeparators, see #8107.
+	QString serializePath(const QString& input)
 	{
-		return path.mid( basePrefix(baseLookup(path)).length() );
+		if (input.isEmpty()) { return input; }
+
+		return QString(input).replace("\\", "/");
 	}
 
-	QString cleanName(const QString& path)
+	QString stripPrefix(const QString& input)
 	{
+		if (input.isEmpty()) { return input; }
+
+		QString path = serializePath(input);
+		return path.mid(basePrefix(baseLookup(path)).length());
+	}
+
+	QString cleanName(const QString& input)
+	{
+		if (input.isEmpty()) { return input; }
+
+		QString path = serializePath(input);
 		return stripPrefix(QFileInfo(path).completeBaseName());
 	}
 
 
 
 
-	QString oldRelativeUpgrade(const QString & input)
+	QString oldRelativeUpgrade(const QString& input)
 	{
-		if (input.isEmpty()) { return input; }
+		Base assumedBase = Base::Absolute;
 
-		//Start by assuming that the file is a user sample
-		Base assumedBase = Base::UserSample;
+		if (input.isEmpty()) { return basePrefix(assumedBase); }
+
+		QString path = serializePath(input);
+
+		//Check if it's a user sample.
+		QString userPath = baseLocation(Base::UserSample) + path;
+		QFileInfo userInfo(userPath);
+		if (userInfo.exists()) { assumedBase = Base::UserSample; }
 
 		//Check if it's a factory sample
-		QString factoryPath = baseLocation(Base::FactorySample) + input;
+		QString factoryPath = baseLocation(Base::FactorySample) + path;
 		QFileInfo factoryInfo(factoryPath);
 		if (factoryInfo.exists()) { assumedBase = Base::FactorySample; }
 
 		//Check if it's a VST
-		QString vstPath = baseLocation(Base::UserVST) + input;
+		QString vstPath = baseLocation(Base::UserVST) + path;
 		QFileInfo vstInfo(vstPath);
 		if (vstInfo.exists()) { assumedBase = Base::UserVST; }
 
 		//Assume we've found the correct base location, return the full path
-		return basePrefix(assumedBase) + input;
+		return basePrefix(assumedBase) + path;
 	}
 
-
-
-
-	QString toAbsolute(const QString & input, bool* error /* = nullptr*/)
+	QString toAbsolute(const QString& input, bool* error /* = nullptr*/)
 	{
+		if (input.isEmpty()) { return input; }
+
+		QString path = serializePath(input);
 		//First, do no harm to absolute paths
-		QFileInfo inputFileInfo = QFileInfo(input);
+		// Note: Paths starting with a colon (:) are always considered absolute, as they denote a QResource.
+		QFileInfo inputFileInfo = QFileInfo(path);
 		if (inputFileInfo.isAbsolute())
 		{
 			if (error) { *error = false; }
-			return input;
+			return path;
 		}
 		//Next, handle old relative paths with no prefix
-		QString upgraded = input.contains(":") ? input : oldRelativeUpgrade(input);
-
+		QString upgraded = oldRelativeUpgrade(path);
 		Base base = baseLookup(upgraded);
 		return baseLocation(base, error) + upgraded.remove(0, basePrefix(base).length());
 	}
 
-	QString relativeOrAbsolute(const QString & input, const Base base)
+	QString relativeOrAbsolute(const QString& input, const Base base)
 	{
 		if (input.isEmpty()) { return input; }
-		QString absolutePath = toAbsolute(input);
+
+		QString absolutePath = toAbsolute(serializePath(input));
 		if (base == Base::Absolute) { return absolutePath; }
 		bool error;
 		QString relativePath = baseQDir(base, &error).relativeFilePath(absolutePath);
@@ -177,10 +226,13 @@ namespace lmms::PathUtil
 			: relativePath;
 	}
 
-	QString toShortestRelative(const QString & input, bool allowLocal /* = false*/)
+	QString toShortestRelative(const QString& input, bool allowLocal /* = false*/)
 	{
-		QFileInfo inputFileInfo = QFileInfo(input);
-		QString absolutePath = inputFileInfo.isAbsolute() ? input : toAbsolute(input);
+		if (input.isEmpty()) { return basePrefix(Base::Absolute); }
+
+		QString path = serializePath(input);
+		QFileInfo inputFileInfo = QFileInfo(path);
+		QString absolutePath = inputFileInfo.isAbsolute() ? path : toAbsolute(path);
 
 		Base shortestBase = Base::Absolute;
 		QString shortestPath = relativeOrAbsolute(absolutePath, shortestBase);
@@ -198,6 +250,47 @@ namespace lmms::PathUtil
 			}
 		}
 		return basePrefix(shortestBase) + relativeOrAbsolute(absolutePath, shortestBase);
+	}
+
+	auto stringToPath(std::string_view path) -> std::filesystem::path
+	{
+#if defined(LMMS_BUILD_WIN32)
+		return toWString(path).get();
+#else
+		// Assume UTF-8 is the narrow encoding on non-Windows
+		return path;
+#endif
+	}
+
+	auto stringToPath(const QString& path) -> std::filesystem::path
+	{
+#if defined(LMMS_BUILD_WIN32)
+		// Cast QString's UTF-16 encoded unsigned short* to wchar_t*
+		return reinterpret_cast<const wchar_t*>(toAbsolute(path).utf16());
+#else
+		// Convert to UTF-8, which we assume is the narrow encoding on non-Windows
+		return toAbsolute(path).toStdString();
+#endif
+	}
+
+	auto pathToString(const std::filesystem::path& path) -> std::string
+	{
+#if defined(LMMS_BUILD_WIN32)
+		const auto utf8String = path.u8string();
+		return {reinterpret_cast<const char*>(utf8String.c_str()), utf8String.size()};
+#else
+		// Assume UTF-8 is the narrow encoding on non-Windows
+		return path.string();
+#endif
+	}
+
+	auto pathToQString(const std::filesystem::path& path) -> QString
+	{
+#if defined(LMMS_BUILD_WIN32)
+		return QString::fromStdWString(path.native());
+#else
+		return QString::fromStdString(path.native());
+#endif
 	}
 
 } // namespace lmms::PathUtil

@@ -64,16 +64,6 @@ MicrotunerConfig::MicrotunerConfig() :
 	m_baseKeyModel(DefaultBaseKey, 0, NumKeys - 1, nullptr, tr("Base key")),
 	m_baseFreqModel(DefaultBaseFreq, 0.1f, 9999.999f, 0.001f, nullptr, tr("Base note frequency"))
 {
-#if QT_VERSION < 0x50C00
-	// Workaround for a bug in Qt versions below 5.12,
-	// where argument-dependent-lookup fails for QFlags operators
-	// declared inside a namepsace.
-	// This affects the Q_DECLARE_OPERATORS_FOR_FLAGS macro in Instrument.h
-	// See also: https://codereview.qt-project.org/c/qt/qtbase/+/225348
-
-	using ::operator|;
-#endif
-
 	setWindowIcon(embed::getIconPixmap("microtuner"));
 	setWindowTitle(tr("Microtuner Configuration"));
 
@@ -202,13 +192,10 @@ MicrotunerConfig::MicrotunerConfig() :
 	this->setLayout(microtunerLayout);
 
 	// Add to the main window and setup fixed size etc.
-	QMdiSubWindow *subWin = getGUI()->mainWindow()->addWindowedWidget(this);
-
+	SubWindow* subWin = getGUI()->mainWindow()->addWindowedWidget(this);
 	subWin->setAttribute(Qt::WA_DeleteOnClose, false);
-	subWin->setMinimumWidth(300);
-	subWin->setMinimumHeight(300);
-	subWin->setMaximumWidth(500);
-	subWin->setMaximumHeight(700);
+	setMinimumSize(300, 300);
+	setMaximumSize(500, 700);
 	subWin->hide();
 
 	// No maximize button
@@ -218,10 +205,6 @@ MicrotunerConfig::MicrotunerConfig() :
 }
 
 
-/**
- * \brief Update list of available scales.
- * \param index Index of the scale to update; update all scales if -1 or out of range.
- */
 void MicrotunerConfig::updateScaleList(int index)
 {
 	if (index >= 0 && static_cast<std::size_t>(index) < MaxScaleCount)
@@ -240,10 +223,6 @@ void MicrotunerConfig::updateScaleList(int index)
 }
 
 
-/**
- * \brief Update list of available keymaps.
- * \param index Index of the keymap to update; update all keymaps if -1 or out of range.
- */
 void MicrotunerConfig::updateKeymapList(int index)
 {
 	if (index >= 0 && static_cast<std::size_t>(index) < MaxKeymapCount)
@@ -262,9 +241,6 @@ void MicrotunerConfig::updateKeymapList(int index)
 }
 
 
-/**
- * \brief Fill all the scale-related values based on currently selected scale
- */
 void MicrotunerConfig::updateScaleForm()
 {
 	Song *song = Engine::getSong();
@@ -288,9 +264,6 @@ void MicrotunerConfig::updateScaleForm()
 }
 
 
-/**
- * \brief Fill all the keymap-related values based on currently selected keymap
- */
 void MicrotunerConfig::updateKeymapForm()
 {
 	Song *song = Engine::getSong();
@@ -319,10 +292,6 @@ void MicrotunerConfig::updateKeymapForm()
 }
 
 
-/**
- * \brief Validate the scale name and entered interval definitions
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::validateScaleForm()
 {
 	auto fail = [this](const QString& message){ QMessageBox::critical(this, tr("Scale parsing error"), message); };
@@ -333,11 +302,7 @@ bool MicrotunerConfig::validateScaleForm()
 	if (name.contains('\n')) {fail(tr("Scale name cannot contain a new-line character")); return false;}
 
 	// check intervals
-	#if (QT_VERSION >= QT_VERSION_CHECK(5,14,0))
-		QStringList input = m_scaleTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-	#else
-		QStringList input = m_scaleTextEdit->toPlainText().split('\n', QString::SkipEmptyParts);
-	#endif
+	QStringList input = m_scaleTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
 	for (auto &line: input)
 	{
 		if (line.isEmpty()) {continue;}
@@ -367,10 +332,6 @@ bool MicrotunerConfig::validateScaleForm()
 }
 
 
-/**
- * \brief Validate the entered key mapping and other values
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::validateKeymapForm()
 {
 	auto fail = [this](const QString& message){ QMessageBox::critical(this, tr("Keymap parsing error"), message); };
@@ -381,11 +342,7 @@ bool MicrotunerConfig::validateKeymapForm()
 	if (name.contains('\n')) {fail(tr("Keymap name cannot contain a new-line character")); return false;}
 
 	// check key mappings
-	#if (QT_VERSION >= QT_VERSION_CHECK(5,14,0))
-		QStringList input = m_keymapTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-	#else
-		QStringList input = m_keymapTextEdit->toPlainText().split('\n', QString::SkipEmptyParts);
-	#endif
+	QStringList input = m_keymapTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
 	for (auto &line: input)
 	{
 		if (line.isEmpty()) {continue;}
@@ -404,10 +361,6 @@ bool MicrotunerConfig::validateKeymapForm()
 }
 
 
-/**
- * \brief Parse and apply the entered scale definition
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::applyScale()
 {
 	if (!validateScaleForm()) {return false;};
@@ -415,11 +368,7 @@ bool MicrotunerConfig::applyScale()
 	std::vector<Interval> newIntervals;
 	newIntervals.emplace_back(1, 1);
 
-#if (QT_VERSION >= QT_VERSION_CHECK(5,14,0))
 	QStringList input = m_scaleTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-#else
-	QStringList input = m_scaleTextEdit->toPlainText().split('\n', QString::SkipEmptyParts);
-#endif
 	for (auto &line: input)
 	{
 		if (line.isEmpty()) {continue;}
@@ -451,21 +400,13 @@ bool MicrotunerConfig::applyScale()
 }
 
 
-/**
- * \brief Parse and apply the entered keymap definition
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::applyKeymap()
 {
 	if (!validateKeymapForm()) {return false;}
 
 	std::vector<int> newMap;
 
-#if (QT_VERSION >= QT_VERSION_CHECK(5,14,0))
 	QStringList input = m_keymapTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-#else
-	QStringList input = m_keymapTextEdit->toPlainText().split('\n', QString::SkipEmptyParts);
-#endif
 	for (auto &line: input)
 	{
 		if (line.isEmpty()) {continue;}
@@ -500,10 +441,6 @@ bool MicrotunerConfig::applyKeymap()
 }
 
 
-/**
- * \brief Parse an .scl file and apply the loaded scale if it is valid
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::loadScaleFromFile()
 {
 	QString fileName = FileDialog::getOpenFileName(this, tr("Open scale"), "", tr("Scala scale definition (*.scl)"));
@@ -535,10 +472,6 @@ bool MicrotunerConfig::loadScaleFromFile()
 }
 
 
-/**
- * \brief Parse a .kbm file and apply the loaded keymap if it is valid
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::loadKeymapFromFile()
 {
 	QString fileName = FileDialog::getOpenFileName(this, tr("Open keymap"), "", tr("Scala keymap definition (*.kbm)"));
@@ -560,7 +493,7 @@ bool MicrotunerConfig::loadKeymapFromFile()
 		QString line = stream.readLine();
 		if (line != "" && line[0] == '!')
 		{
-			if (line.length() > 1 && line[1] == '!' && i == -7)		// LMMS extension: double "!" occuring before any
+			if (line.length() > 1 && line[1] == '!' && i == -7)		// LMMS extension: double "!" occurring before any
 			{														// value is loaded marks a description field.
 				m_keymapNameEdit->setText(line.mid(2));
 			}
@@ -583,10 +516,6 @@ bool MicrotunerConfig::loadKeymapFromFile()
 }
 
 
-/**
- * \brief Save currently entered scale definition as .scl file
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::saveScaleToFile()
 {
 	if (!applyScale()) {return false;}
@@ -619,10 +548,6 @@ bool MicrotunerConfig::saveScaleToFile()
 }
 
 
-/**
- * \brief Save currently entered keymap definition as .kbm file
- * \return true if input is valid, false if problems were detected
- */
 bool MicrotunerConfig::saveKeymapToFile()
 {
 	if (!applyKeymap()) {return false;}
@@ -677,14 +602,6 @@ void MicrotunerConfig::saveSettings(QDomDocument &document, QDomElement &element
 void MicrotunerConfig::loadSettings(const QDomElement &element)
 {
 	MainWindow::restoreWidgetState(this, element);
-}
-
-
-void MicrotunerConfig::closeEvent(QCloseEvent *ce)
-{
-	if (parentWidget()) {parentWidget()->hide();}
-	else {hide();}
-	ce->ignore();
 }
 
 

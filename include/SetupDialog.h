@@ -85,6 +85,8 @@ private slots:
 	void toggleMMPZ(bool enabled);
 	void toggleDisableBackup(bool enabled);
 	void toggleOpenLastProject(bool enabled);
+	void toggleDiscordPresence(bool enabled);
+	void detachBehaviorChanged();
 	void loopMarkerModeChanged();
 	void setLanguage(int lang);
 
@@ -98,6 +100,7 @@ private slots:
 	void vstEmbedMethodChanged();
 	void toggleVSTAlwaysOnTop(bool en);
 	void toggleDisableAutoQuit(bool enabled);
+	void toggleMixSanitization(bool enabled);
 
 	// Audio settings widget.
 	void audioInterfaceChanged(const QString & driver);
@@ -114,6 +117,8 @@ private slots:
 	void setWorkingDir(const QString & workingDir);
 	void openVSTDir();
 	void setVSTDir(const QString & vstDir);
+	void openVST3Dir();
+	void setVST3Dir(const QString & vst3Dir);
 	void openLADSPADir();
 	void setLADSPADir(const QString & ladspaDir);
 	void openSF2Dir();
@@ -147,8 +152,15 @@ private:
 	bool m_MMPZ;
 	bool m_disableBackup;
 	bool m_openLastProject;
+	bool m_discordEnabled = false;
+	QLineEdit* m_discordDetailsEdit = nullptr;
+	QLineEdit* m_discordStateEdit = nullptr;
+	QString m_detachBehavior;
+	QComboBox* m_detachBehaviorComboBox;
 	QString m_loopMarkerMode;
 	QComboBox* m_loopMarkerComboBox;
+	QString m_autoScroll;
+	QComboBox* m_autoScrollComboBox;
 	QString m_lang;
 	QStringList m_languages;
 
@@ -177,11 +189,11 @@ private:
 	QComboBox * m_audioInterfaces;
 	AswMap m_audioIfaceSetupWidgets;
 	trMap m_audioIfaceNames;
-	bool m_NaNHandler;
 	int m_bufferSize;
 	QSlider * m_bufferSizeSlider;
 	QLabel * m_bufferSizeLbl;
 	QLabel * m_bufferSizeWarnLbl;
+	bool m_mixSanitization;
 	int m_sampleRate;
 	QSlider* m_sampleRateSlider;
 
@@ -195,6 +207,7 @@ private:
 	// Paths settings widgets.
 	QString m_workingDir;
 	QString m_vstDir;
+	QString m_vst3Dir;
 	QString m_ladspaDir;
 	QString m_gigDir;
 	QString m_sf2Dir;
@@ -206,6 +219,7 @@ private:
 
 	QLineEdit * m_workingDirLineEdit;
 	QLineEdit * m_vstDirLineEdit;
+	QLineEdit * m_vst3DirLineEdit;
 	QLineEdit * m_themeDirLineEdit;
 	QLineEdit * m_ladspaDirLineEdit;
 	QLineEdit * m_gigDirLineEdit;

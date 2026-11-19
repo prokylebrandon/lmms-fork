@@ -23,6 +23,8 @@
  */
 
 
+#include <cmath>
+
 #include <QFile>
 
 #include "ProjectRenderer.h"
@@ -43,15 +45,11 @@ const std::array<ProjectRenderer::FileEncodeDevice, 5> ProjectRenderer::fileEnco
 {
 
 	FileEncodeDevice{ ProjectRenderer::ExportFileFormat::Wave,
-		QT_TRANSLATE_NOOP( "ProjectRenderer", "WAV (*.wav)" ),
-					".wav", &AudioFileWave::getInst },
+		QT_TR_NOOP("WAV (*.wav)"), ".wav", &AudioFileWave::getInst},
 	FileEncodeDevice{ ProjectRenderer::ExportFileFormat::Flac,
-		QT_TRANSLATE_NOOP("ProjectRenderer", "FLAC (*.flac)"),
-		".flac",
-		&AudioFileFlac::getInst
-	},
+		QT_TR_NOOP("FLAC (*.flac)"), ".flac", &AudioFileFlac::getInst},
 	FileEncodeDevice{ ProjectRenderer::ExportFileFormat::Ogg,
-		QT_TRANSLATE_NOOP( "ProjectRenderer", "OGG (*.ogg)" ),
+		QT_TR_NOOP("OGG (*.ogg)"),
 					".ogg",
 #ifdef LMMS_HAVE_OGGVORBIS
 					&AudioFileOgg::getInst
@@ -59,8 +57,8 @@ const std::array<ProjectRenderer::FileEncodeDevice, 5> ProjectRenderer::fileEnco
 					nullptr
 #endif
 									},
-	FileEncodeDevice{ ProjectRenderer::ExportFileFormat::MP3,
-		QT_TRANSLATE_NOOP( "ProjectRenderer", "MP3 (*.mp3)" ),
+	FileEncodeDevice{ProjectRenderer::ExportFileFormat::MP3,
+		QT_TR_NOOP("MP3 (*.mp3)"),
 					".mp3",
 #ifdef LMMS_HAVE_MP3LAME
 					&AudioFileMP3::getInst
@@ -75,18 +73,12 @@ const std::array<ProjectRenderer::FileEncodeDevice, 5> ProjectRenderer::fileEnco
 
 } ;
 
-
-
-
-ProjectRenderer::ProjectRenderer( const AudioEngine::qualitySettings & qualitySettings,
-					const OutputSettings & outputSettings,
-					ExportFileFormat exportFileFormat,
-					const QString & outputFilename ) :
-	QThread( Engine::audioEngine() ),
-	m_fileDev( nullptr ),
-	m_qualitySettings( qualitySettings ),
-	m_progress( 0 ),
-	m_abort( false )
+ProjectRenderer::ProjectRenderer(
+	const OutputSettings& outputSettings, ExportFileFormat exportFileFormat, const QString& outputFilename)
+	: QThread(Engine::audioEngine())
+	, m_fileDev(nullptr)
+	, m_progress(0)
+	, m_abort(false)
 {
 	AudioFileDeviceInstantiaton audioEncoderFactory = fileEncodeDevices[static_cast<std::size_t>(exportFileFormat)].m_getDevInst;
 
@@ -145,7 +137,7 @@ void ProjectRenderer::startProcessing()
 	{
 		// Have to do audio engine stuff with GUI-thread affinity in order to
 		// make slots connected to sampleRateChanged()-signals being called immediately.
-		Engine::audioEngine()->setAudioDevice( m_fileDev, m_qualitySettings, false, false );
+		Engine::audioEngine()->setAudioDevice(m_fileDev, false);
 
 		start(
 #ifndef LMMS_BUILD_WIN32
@@ -163,22 +155,55 @@ void ProjectRenderer::run()
 
 	Engine::getSong()->startExport();
 	// Skip first empty buffer.
-	Engine::audioEngine()->nextBuffer();
+	Engine::audioEngine()->renderNextPeriod();
 
 	m_progress = 0;
 
 	// Now start processing
-	Engine::audioEngine()->startProcessing(false);
+	Engine::audioEngine()->startProcessing();
 
 	// Continually track and emit progress percentage to listeners.
 	while (!Engine::getSong()->isExportDone() && !m_abort)
 	{
-		m_fileDev->processNextBuffer();
+		const auto buffer = Engine::audioEngine()->renderNextPeriod();
+		m_fileDev->writeBuffer(buffer.data(), buffer.size());
+		if (m_fileDev->hasWriteError()) { break; }
+
 		const int nprog = Engine::getSong()->getExportProgress();
 		if (m_progress != nprog)
 		{
 			m_progress = nprog;
 			emit progressChanged( m_progress );
+		}
+	}
+
+	// Let reverb and delay tails ring out: stop the song from starting new notes,
+	// then keep rendering until half a second of near-silence (30 seconds at most).
+	if (!m_abort && !m_fileDev->hasWriteError() && Engine::getSong()->exportTail())
+	{
+		Engine::getSong()->endExportPlayback();
+
+		const auto sampleRate = static_cast<std::size_t>(m_fileDev->getOutputSettings().getSampleRate());
+		const auto maxFrames = 30 * sampleRate;
+		const auto quietFramesNeeded = sampleRate / 2;
+		constexpr auto silenceThreshold = 0.0001f; // about -80 dBFS
+
+		auto renderedFrames = std::size_t{0};
+		auto quietFrames = std::size_t{0};
+		while (!m_abort && renderedFrames < maxFrames && quietFrames < quietFramesNeeded)
+		{
+			const auto buffer = Engine::audioEngine()->renderNextPeriod();
+			m_fileDev->writeBuffer(buffer.data(), buffer.size());
+			if (m_fileDev->hasWriteError()) { break; }
+
+			auto loud = false;
+			for (const auto& frame : buffer)
+			{
+				if (std::abs(frame.left()) > silenceThreshold || std::abs(frame.right()) > silenceThreshold) { loud = true; break; }
+			}
+
+			renderedFrames += buffer.size();
+			quietFrames = loud ? 0 : quietFrames + buffer.size();
 		}
 	}
 

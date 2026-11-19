@@ -27,8 +27,6 @@
 
 
 #include "Knob.h"
-#include "SampleThumbnail.h"
-
 
 namespace lmms
 {
@@ -37,8 +35,6 @@ class Sample;
 
 namespace gui
 {
-
-class AudioFileProcessorView;
 
 class AudioFileProcessorWaveView : public QWidget
 {
@@ -144,9 +140,6 @@ private:
 	bool m_reversed;
 	f_cnt_t m_framesPlayed;
 	bool m_animation;
-	SampleThumbnail m_sampleThumbnail;
-
-	friend class AudioFileProcessorView;
 
 public:
 	AudioFileProcessorWaveView(QWidget* parent, int w, int h, Sample const* buf,
@@ -171,7 +164,8 @@ private:
 
 	void updateGraph();
 	void reverse();
-	void updateCursor(QMouseEvent* me = nullptr);
+	void updateCursor(const QMouseEvent* me = nullptr);
+	bool pointerCloseToStartEndOrLoop(const QMouseEvent* me) const;
 
 	void configureKnobRelationsAndWaveViews();
 

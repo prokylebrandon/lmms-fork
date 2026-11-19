@@ -22,76 +22,42 @@
  *
  */
 
+#include <cassert>
 #include <cstring>
 
 #include "AudioDevice.h"
 #include "AudioEngine.h"
-#include "ConfigManager.h"
+#include "endian_handling.h"
 
 namespace lmms
 {
 
-AudioDevice::AudioDevice( const ch_cnt_t _channels, AudioEngine*  _audioEngine ) :
-	m_supportsCapture( false ),
-	m_sampleRate( _audioEngine->outputSampleRate() ),
-	m_channels( _channels ),
-	m_audioEngine( _audioEngine ),
-	m_buffer(new SampleFrame[audioEngine()->framesPerPeriod()])
+AudioDevice::AudioDevice(const ch_cnt_t _channels, AudioEngine* _audioEngine)
+	: m_supportsCapture(false)
+	, m_sampleRate(_audioEngine->outputSampleRate())
+	, m_channels(_channels)
+	, m_audioEngine(_audioEngine)
 {
 }
-
 
 
 
 AudioDevice::~AudioDevice()
 {
-	delete[] m_buffer;
-	m_devMutex.tryLock();
-	unlock();
+	assert(!isRunning() && "device should have been stopped before being destroyed");
 }
 
-
-
-
-void AudioDevice::processNextBuffer()
+void AudioDevice::startProcessing()
 {
-	const fpp_t frames = getNextBuffer( m_buffer );
-	if (frames) { writeBuffer(m_buffer, frames); }
-	else
-	{
-		m_inProcess = false;
-	}
+	m_running.test_and_set(std::memory_order_acquire);
+	startProcessingImpl();
 }
-
-fpp_t AudioDevice::getNextBuffer(SampleFrame* _ab)
-{
-	fpp_t frames = audioEngine()->framesPerPeriod();
-	const SampleFrame* b = audioEngine()->nextBuffer();
-
-	if (!b) { return 0; }
-
-	memcpy(_ab, b, frames * sizeof(SampleFrame));
-
-	if (audioEngine()->hasFifoWriter()) { delete[] b; }
-	return frames;
-}
-
-
-
 
 void AudioDevice::stopProcessing()
 {
-	if( audioEngine()->hasFifoWriter() )
-	{
-		while( m_inProcess )
-		{
-			processNextBuffer();
-		}
-	}
+	m_running.clear(std::memory_order_release);
+	stopProcessingImpl();
 }
-
-
-
 
 void AudioDevice::stopProcessingThread( QThread * thread )
 {
@@ -126,44 +92,49 @@ void AudioDevice::renamePort(AudioBusHandle*)
 {
 }
 
-int AudioDevice::convertToS16(const SampleFrame* _ab,
-								const fpp_t _frames,
-								int_sample_t * _output_buffer,
-								const bool _convert_endian )
+int AudioDevice::toInt16leInterleaved(const SampleFrame* src, const f_cnt_t frames, int_sample_t* dst) const
 {
-	if( _convert_endian )
-	{
-		for( fpp_t frame = 0; frame < _frames; ++frame )
-		{
-			for( ch_cnt_t chnl = 0; chnl < channels(); ++chnl )
-			{
-				auto temp = static_cast<int_sample_t>(AudioEngine::clip(_ab[frame][chnl]) * OUTPUT_SAMPLE_MULTIPLIER);
+	assert(src != nullptr);
+	assert(dst != nullptr);
+	assert(channels() <= DEFAULT_CHANNELS && "only mono and stereo are supported");
 
-				( _output_buffer + frame * channels() )[chnl] =
-						( temp & 0x00ff ) << 8 |
-						( temp & 0xff00 ) >> 8;
-			}
+	// Clip, scale to 16 bits, and store as little-endian whatever the host byte order is
+	const auto toInt16le = [](const sample_t s) -> int_sample_t {
+		return byteswapIfBE(static_cast<int_sample_t>(AudioEngine::clip(s) * OUTPUT_SAMPLE_MULTIPLIER));
+	};
+
+	const ch_cnt_t chans = channels();
+	constexpr ch_cnt_t left = 0;
+	constexpr ch_cnt_t right = 1;
+
+	if (chans == 1)
+	{
+		// Downmix to mono
+		for (f_cnt_t frame = 0; frame < frames; ++frame)
+		{
+			dst[frame] = toInt16le(0.5f * (src[frame][left] + src[frame][right]));
 		}
 	}
 	else
 	{
-		for( fpp_t frame = 0; frame < _frames; ++frame )
+		for (f_cnt_t frame = 0; frame < frames; ++frame)
 		{
-			for( ch_cnt_t chnl = 0; chnl < channels(); ++chnl )
+			for (ch_cnt_t chnl = 0; chnl < chans; ++chnl)
 			{
-				(_output_buffer + frame * channels())[chnl]
-					= static_cast<int_sample_t>(AudioEngine::clip(_ab[frame][chnl]) * OUTPUT_SAMPLE_MULTIPLIER);
+				// Channels beyond stereo are unsupported (asserted above). In release builds
+				// they are silenced rather than read out of bounds.
+				dst[frame * chans + chnl] = toInt16le(chnl < DEFAULT_CHANNELS ? src[frame][chnl] : 0.0f);
 			}
 		}
 	}
 
-	return _frames * channels() * BYTES_PER_INT_SAMPLE;
+	return frames * chans * BYTES_PER_INT_SAMPLE;
 }
 
 
 
 
-void AudioDevice::clearS16Buffer( int_sample_t * _outbuf, const fpp_t _frames )
+void AudioDevice::clearS16Buffer( int_sample_t * _outbuf, const f_cnt_t _frames )
 {
 
 	assert( _outbuf != nullptr );

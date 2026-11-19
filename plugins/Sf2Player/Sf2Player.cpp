@@ -42,13 +42,22 @@
 #include "PathUtil.h"
 #include "PixmapButton.h"
 #include "Song.h"
-#include "fluidsynthshims.h"
 
 #include "PatchesDialog.h"
 #include "LcdSpinBox.h"
 
 #include "embed.h"
 #include "plugin_export.h"
+
+#define FLUID_REVERB_DEFAULT_ROOMSIZE 0.2f
+#define FLUID_REVERB_DEFAULT_DAMP 0.0f
+#define FLUID_REVERB_DEFAULT_WIDTH 0.5f
+#define FLUID_REVERB_DEFAULT_LEVEL 0.9f
+
+#define FLUID_CHORUS_DEFAULT_N 3
+#define FLUID_CHORUS_DEFAULT_LEVEL 2.0f
+#define FLUID_CHORUS_DEFAULT_SPEED 0.3f
+#define FLUID_CHORUS_DEFAULT_DEPTH 8.0f
 
 namespace lmms
 {
@@ -123,7 +132,7 @@ struct Sf2PluginData
 
 Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	Instrument(_instrument_track, &sf2player_plugin_descriptor, nullptr, Flag::IsSingleStreamed),
-	m_srcState( nullptr ),
+	m_resampler(AudioResampler::Mode::Linear),
 	m_synth(nullptr),
 	m_font( nullptr ),
 	m_fontId( 0 ),
@@ -145,13 +154,10 @@ Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	m_chorusSpeed(FLUID_CHORUS_DEFAULT_SPEED, 0.29f, 5.f, 0.01f, this, tr("Chorus speed")),
 	m_chorusDepth(FLUID_CHORUS_DEFAULT_DEPTH, 0, 46.f, 0.05f, this, tr("Chorus depth"))
 {
-
-
-#if QT_VERSION_CHECK(FLUIDSYNTH_VERSION_MAJOR, FLUIDSYNTH_VERSION_MINOR, FLUIDSYNTH_VERSION_MICRO) >= QT_VERSION_CHECK(1,1,9)
 	// Deactivate all audio drivers in fluidsynth
-	const char *none[] = { nullptr };
-	fluid_audio_driver_register( none );
-#endif
+	const char* none[] = { nullptr };
+	fluid_audio_driver_register(none);
+
 	m_settings = new_fluid_settings();
 
 	//fluid_settings_setint( m_settings, (char *) "audio.period-size", engine::audioEngine()->framesPerPeriod() );
@@ -159,9 +165,8 @@ Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	// This sets up m_synth and updates reverb/chorus/gain
 	reloadSynth();
 
-#if FLUIDSYNTH_VERSION_MAJOR >= 2
 	// Get the default values from the setting
-	double settingVal;
+	double settingVal = 0;
 
 	fluid_settings_getnum_default(m_settings, "synth.reverb.room-size", &settingVal);
 	m_reverbRoomSize.setInitValue(settingVal);
@@ -180,7 +185,6 @@ Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	m_chorusSpeed.setInitValue(settingVal);
 	fluid_settings_getnum_default(m_settings, "synth.chorus.depth", &settingVal);
 	m_chorusDepth.setInitValue(settingVal);
-#endif
 
 	// FIXME: there's no good way to tell if we're loading a preset or an empty instrument
 	// We rely on instantiate() to load the default soundfont for new instruments,
@@ -235,11 +239,6 @@ Sf2Instrument::~Sf2Instrument()
 	freeFont();
 	delete_fluid_synth( m_synth );
 	delete_fluid_settings( m_settings );
-	if( m_srcState != nullptr )
-	{
-		src_delete( m_srcState );
-	}
-
 }
 
 
@@ -270,10 +269,14 @@ void Sf2Instrument::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 void Sf2Instrument::loadSettings( const QDomElement & _this )
 {
-	openFile( _this.attribute( "src" ), false );
-	m_patchNum.loadSettings( _this, "patch" );
-	m_bankNum.loadSettings( _this, "bank" );
-
+	QString src = _this.attribute("src");
+	if (!src.isEmpty())
+	{
+		openFile(src, false);
+		m_patchNum.loadSettings(_this, "patch");
+		m_bankNum.loadSettings(_this, "bank");
+	}
+	
 	m_gain.loadSettings( _this, "gain" );
 
 	m_reverbOn.loadSettings( _this, "reverbOn" );
@@ -313,14 +316,10 @@ void Sf2Instrument::loadFile( const QString & _file )
 #endif
 
 			fluid_sfont_iteration_start( pSoundFont );
-#if FLUIDSYNTH_VERSION_MAJOR < 2
-			fluid_preset_t preset;
-			fluid_preset_t *pCurPreset = &preset;
-#else
-			fluid_preset_t *pCurPreset = nullptr;
-#endif
+			fluid_preset_t* pCurPreset = nullptr;
 
-			if ( ( pCurPreset = fluid_sfont_iteration_next_wrapper( pSoundFont, pCurPreset ) ) ) {
+			if ((pCurPreset = fluid_sfont_iteration_next(pSoundFont)))
+			{
 				iBank = fluid_preset_get_banknum( pCurPreset );
 				iProg = fluid_preset_get_num( pCurPreset );
 
@@ -341,17 +340,30 @@ void Sf2Instrument::loadFile( const QString & _file )
 
 
 
-AutomatableModel * Sf2Instrument::childModel( const QString & _modelName )
+auto Sf2Instrument::midiPatch() const -> std::optional<MidiPatch>
 {
-	if( _modelName == "bank" )
+	return MidiPatch {
+		.bank = static_cast<std::uint16_t>(m_bankNum.value()),
+		.program = static_cast<std::uint8_t>(m_patchNum.value())
+	};
+}
+
+
+
+
+AutomatableModel* Sf2Instrument::childModel(std::string_view modelName)
+{
+	if (modelName == "bank")
 	{
 		return &m_bankNum;
 	}
-	else if( _modelName == "patch" )
+	else if (modelName == "patch")
 	{
 		return &m_patchNum;
 	}
-	qCritical() << "requested unknown model " << _modelName;
+
+	qCritical() << "requested unknown model " << QString::fromUtf8(modelName.data(), modelName.size());
+
 	return nullptr;
 }
 
@@ -384,8 +396,7 @@ void Sf2Instrument::openFile( const QString & _sf2File, bool updateTrackName )
 {
 	emit fileLoading();
 
-	// Used for loading file
-	char * sf2Ascii = qstrdup( qPrintable( PathUtil::toAbsolute( _sf2File ) ) );
+	const auto filePath = PathUtil::toAbsolute(_sf2File).toStdString();
 	QString relativePath = PathUtil::toShortestRelative( _sf2File );
 
 	// free the soundfont if one is selected
@@ -394,9 +405,9 @@ void Sf2Instrument::openFile( const QString & _sf2File, bool updateTrackName )
 	m_synthMutex.lock();
 
 	bool loaded = false;
-	if (fluid_is_soundfont(sf2Ascii))
+	if (fluid_is_soundfont(filePath.c_str()))
 	{
-		m_fontId = fluid_synth_sfload(m_synth, sf2Ascii, true);
+		m_fontId = fluid_synth_sfload(m_synth, filePath.c_str(), true);
 
 		if (fluid_synth_sfcount(m_synth) > 0)
 		{
@@ -423,8 +434,6 @@ void Sf2Instrument::openFile( const QString & _sf2File, bool updateTrackName )
 
 		emit fileChanged();
 	}
-
-	delete[] sf2Ascii;
 
 	if( updateTrackName || instrumentTrack()->displayName() == displayName() )
 	{
@@ -467,13 +476,9 @@ QString Sf2Instrument::getCurrentPatchName()
 						m_synth, fluid_sfont_get_id(pSoundFont) );
 #endif
 			fluid_sfont_iteration_start( pSoundFont );
-#if FLUIDSYNTH_VERSION_MAJOR < 2
-			fluid_preset_t preset;
-			fluid_preset_t *pCurPreset = &preset;
-#else
-			fluid_preset_t *pCurPreset = nullptr;
-#endif
-			while ((pCurPreset = fluid_sfont_iteration_next_wrapper(pSoundFont, pCurPreset)))
+			fluid_preset_t* pCurPreset = nullptr;
+
+			while ((pCurPreset = fluid_sfont_iteration_next(pSoundFont)))
 			{
 				int iBank = fluid_preset_get_banknum( pCurPreset );
 #ifdef CONFIG_FLUID_BANK_OFFSET
@@ -499,56 +504,31 @@ void Sf2Instrument::updateGain()
 	fluid_synth_set_gain( m_synth, m_gain.value() );
 }
 
-#define FLUIDSYNTH_VERSION_HEX ((FLUIDSYNTH_VERSION_MAJOR << 16) \
-	| (FLUIDSYNTH_VERSION_MINOR << 8) \
-	| FLUIDSYNTH_VERSION_MICRO)
-#define USE_NEW_EFFECT_API (FLUIDSYNTH_VERSION_HEX >= 0x020200)
-
 void Sf2Instrument::updateReverbOn()
 {
-#if USE_NEW_EFFECT_API
 	fluid_synth_reverb_on(m_synth, -1, m_reverbOn.value() ? 1 : 0);
-#else
-	fluid_synth_set_reverb_on(m_synth, m_reverbOn.value() ? 1 : 0);
-#endif
 }
 
 void Sf2Instrument::updateReverb()
 {
-#if USE_NEW_EFFECT_API
 	fluid_synth_set_reverb_group_roomsize(m_synth, -1, m_reverbRoomSize.value());
 	fluid_synth_set_reverb_group_damp(m_synth, -1, m_reverbDamping.value());
 	fluid_synth_set_reverb_group_width(m_synth, -1, m_reverbWidth.value());
 	fluid_synth_set_reverb_group_level(m_synth, -1, m_reverbLevel.value());
-#else
-	fluid_synth_set_reverb(m_synth, m_reverbRoomSize.value(),
-			m_reverbDamping.value(), m_reverbWidth.value(),
-			m_reverbLevel.value());
-#endif
 }
 
 void Sf2Instrument::updateChorusOn()
 {
-#if USE_NEW_EFFECT_API
 	fluid_synth_chorus_on(m_synth, -1, m_chorusOn.value() ? 1 : 0);
-#else
-	fluid_synth_set_chorus_on(m_synth, m_chorusOn.value() ? 1 : 0);
-#endif
 }
 
 void Sf2Instrument::updateChorus()
 {
-#if USE_NEW_EFFECT_API
 	fluid_synth_set_chorus_group_nr(m_synth, -1, static_cast<int>(m_chorusNum.value()));
 	fluid_synth_set_chorus_group_level(m_synth, -1, m_chorusLevel.value());
 	fluid_synth_set_chorus_group_speed(m_synth, -1, m_chorusSpeed.value());
 	fluid_synth_set_chorus_group_depth(m_synth, -1, m_chorusDepth.value());
 	fluid_synth_set_chorus_group_type(m_synth, -1, FLUID_CHORUS_MOD_SINE);
-#else
-	fluid_synth_set_chorus(m_synth, static_cast<int>(m_chorusNum.value()),
-			m_chorusLevel.value(), m_chorusSpeed.value(),
-			m_chorusDepth.value(), FLUID_CHORUS_MOD_SINE);
-#endif
 }
 
 void Sf2Instrument::updateTuning()
@@ -590,7 +570,9 @@ void Sf2Instrument::reloadSynth()
 	// Set & get, returns the true sample rate
 	fluid_settings_setnum( m_settings, (char *) "synth.sample-rate", Engine::audioEngine()->outputSampleRate() );
 	fluid_settings_getnum( m_settings, (char *) "synth.sample-rate", &tempRate );
+
 	m_internalSampleRate = static_cast<int>( tempRate );
+	m_resampler.setRatio(m_internalSampleRate, Engine::audioEngine()->outputSampleRate());
 
 	if( m_font )
 	{
@@ -620,31 +602,19 @@ void Sf2Instrument::reloadSynth()
 	}
 
 	m_synthMutex.lock();
-	if( Engine::audioEngine()->currentQualitySettings().interpolation >=
-			AudioEngine::qualitySettings::Interpolation::SincFastest )
+
+	if (m_internalSampleRate != Engine::audioEngine()->outputSampleRate())
 	{
-		fluid_synth_set_interp_method( m_synth, -1, FLUID_INTERP_7THORDER );
+		// LMMS supports a sample rate of 192 kHZ, while FluidSynth only supports up to 96 kHZ.
+		// Because of this, the instrument is resampled using libsamplerate when necessary.
+		// This uses linear interpolation, so the instrument's interpolation is set to FLUID_INTERP_LINEAR
+		// to match. A better option might be to make the interpolation option modifiable by the user, as well as only
+		// supporting only up to 96 kHZ (though that may be a problem if theres a strong need for 192 kHZ).
+		fluid_synth_set_interp_method(m_synth, -1, FLUID_INTERP_LINEAR);
 	}
-	else
-	{
-		fluid_synth_set_interp_method( m_synth, -1, FLUID_INTERP_DEFAULT );
-	}
+
 	m_synthMutex.unlock();
-	if( m_internalSampleRate < Engine::audioEngine()->outputSampleRate() )
-	{
-		m_synthMutex.lock();
-		if( m_srcState != nullptr )
-		{
-			src_delete( m_srcState );
-		}
-		int error;
-		m_srcState = src_new( Engine::audioEngine()->currentQualitySettings().libsrcInterpolation(), DEFAULT_CHANNELS, &error );
-		if( m_srcState == nullptr || error )
-		{
-			qCritical("error while creating libsamplerate data structure in Sf2Instrument::reloadSynth()");
-		}
-		m_synthMutex.unlock();
-	}
+
 	updateReverb();
 	updateChorus();
 	updateReverbOn();
@@ -752,7 +722,6 @@ void Sf2Instrument::noteOn( Sf2PluginData * n )
 		}
 	}
 
-#if FLUIDSYNTH_VERSION_MAJOR >= 2
 	// Smallest balance value that results in full attenuation of one channel.
 	// Corresponds to internal FluidSynth macro `FLUID_CB_AMP_SIZE`.
 	constexpr static auto maxBalance = 1441.f;
@@ -770,7 +739,6 @@ void Sf2Instrument::noteOn( Sf2PluginData * n )
 			fluid_voice_update_param(voice.get(), GEN_CUSTOM_BALANCE);
 		}
 	}
-#endif
 
 	m_synthMutex.unlock();
 
@@ -798,7 +766,7 @@ void Sf2Instrument::noteOff( Sf2PluginData * n )
 
 void Sf2Instrument::play( SampleFrame* _working_buffer )
 {
-	const fpp_t frames = Engine::audioEngine()->framesPerPeriod();
+	const f_cnt_t frames = Engine::audioEngine()->framesPerPeriod();
 
 	// set midi pitch for this period
 	const int currentMidiPitch = instrumentTrack()->midiPitch();
@@ -884,44 +852,38 @@ void Sf2Instrument::play( SampleFrame* _working_buffer )
 
 void Sf2Instrument::renderFrames( f_cnt_t frames, SampleFrame* buf )
 {
-	m_synthMutex.lock();
-	fluid_synth_get_gain(m_synth); // This flushes voice updates as a side effect
-	if( m_internalSampleRate < Engine::audioEngine()->outputSampleRate() &&
-							m_srcState != nullptr )
-	{
-		const fpp_t f = frames * m_internalSampleRate / Engine::audioEngine()->outputSampleRate();
-#ifdef __GNUC__
-		SampleFrame tmp[f];
-#else
-		SampleFrame* tmp = new SampleFrame[f];
-#endif
-		fluid_synth_write_float( m_synth, f, tmp, 0, 2, tmp, 1, 2 );
+	const auto guard = std::lock_guard{m_synthMutex};
 
-		SRC_DATA src_data;
-		src_data.data_in = (float *)tmp;
-		src_data.data_out = (float *)buf;
-		src_data.input_frames = f;
-		src_data.output_frames = frames;
-		src_data.src_ratio = (double) frames / f;
-		src_data.end_of_input = 0;
-		int error = src_process( m_srcState, &src_data );
-#ifndef __GNUC__
-		delete[] tmp;
-#endif
-		if( error )
-		{
-			qCritical( "Sf2Instrument: error while resampling: %s", src_strerror( error ) );
-		}
-		if (static_cast<f_cnt_t>(src_data.output_frames_gen) < frames)
-		{
-			qCritical("Sf2Instrument: not enough frames: %ld / %zu", src_data.output_frames_gen, frames);
-		}
+	fluid_synth_get_gain(m_synth); // This flushes voice updates as a side effect
+
+	if (m_internalSampleRate == Engine::audioEngine()->outputSampleRate()) {
+		fluid_synth_write_float(m_synth, frames, buf, 0, 2, buf, 1, 2);
+		return;
 	}
-	else
+
+	// TODO: These kind of playback pipelines/graphs are repeated within other parts of the codebase that work with
+	// audio samples. We should find a way to unify this but the right abstraction is not so clear yet.
+	while (frames > 0)
 	{
-		fluid_synth_write_float( m_synth, frames, buf, 0, 2, buf, 1, 2 );
+		if (m_bufferView.empty())
+		{
+			fluid_synth_write_float(m_synth, m_buffer.size(), m_buffer.data(), 0, 2, m_buffer.data(), 1, 2);
+			m_bufferView = m_buffer;
+		}
+
+		const auto [inputFramesUsed, outputFramesGenerated]
+			= m_resampler.process({&m_bufferView.data()[0][0], 2, m_bufferView.size()}, {&buf[0][0], 2, frames});
+
+		if (inputFramesUsed == 0 && outputFramesGenerated == 0)
+		{
+			std::fill_n(buf, frames, SampleFrame{});
+			break;
+		}
+
+		m_bufferView = m_bufferView.subspan(inputFramesUsed);
+		buf += outputFramesGenerated;
+		frames -= outputFramesGenerated;
 	}
-	m_synthMutex.unlock();
 }
 
 
@@ -984,7 +946,7 @@ Sf2InstrumentView::Sf2InstrumentView( Instrument * _instrument, QWidget * _paren
 
 	// File Button
 	m_fileDialogButton = new PixmapButton(this);
-	m_fileDialogButton->setCursor(QCursor(Qt::PointingHandCursor));
+	m_fileDialogButton->setCursor(Qt::PointingHandCursor);
 	m_fileDialogButton->setActiveGraphic(PLUGIN_NAME::getIconPixmap("fileselect_on"));
 	m_fileDialogButton->setInactiveGraphic(PLUGIN_NAME::getIconPixmap("fileselect_off"));
 	m_fileDialogButton->move(217, 107);
@@ -995,7 +957,7 @@ Sf2InstrumentView::Sf2InstrumentView( Instrument * _instrument, QWidget * _paren
 
 	// Patch Button
 	m_patchDialogButton = new PixmapButton(this);
-	m_patchDialogButton->setCursor(QCursor(Qt::PointingHandCursor));
+	m_patchDialogButton->setCursor(Qt::PointingHandCursor);
 	m_patchDialogButton->setActiveGraphic(PLUGIN_NAME::getIconPixmap("patches_on"));
 	m_patchDialogButton->setInactiveGraphic(PLUGIN_NAME::getIconPixmap("patches_off"));
 	m_patchDialogButton->setEnabled(false);

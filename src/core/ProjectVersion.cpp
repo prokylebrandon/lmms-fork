@@ -39,7 +39,7 @@ ProjectVersion::ProjectVersion(QString version, CompareType c) :
 	// Version numbers may have build data, prefixed with a '+',
 	// but this mustn't affect version precedence in comparisons
 	QString metadataStripped = version.split("+").first();
-	// They must have an obligatory initial segement, and may have
+	// They must have an obligatory initial segment, and may have
 	// optional identifiers prefaced by a '-'. Both parts affect precedence
 	QString obligatorySegment = metadataStripped.section('-', 0, 0);
 	QString prereleaseSegment = metadataStripped.section('-', 1);
@@ -77,7 +77,6 @@ ProjectVersion::ProjectVersion(const char* version, CompareType c) : ProjectVers
 
 
 
-//! @param c Determines the number of identifiers to check when comparing
 int ProjectVersion::compare(const ProjectVersion & a, const ProjectVersion & b, CompareType c)
 {
 	// How many identifiers to compare before we consider the versions equal

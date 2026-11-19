@@ -28,13 +28,13 @@
 #include <QMenu>
 #include <QPainter>
 
+#include "FileDialog.h"
 #include "GuiApplication.h"
 #include "AutomationEditor.h"
 #include "embed.h"
 #include "PathUtil.h"
 #include "SampleClip.h"
-#include "SampleLoader.h"
-#include "SampleThumbnail.h"
+#include "SampleThumbnailRenderer.h"
 #include "Song.h"
 #include "StringPairDrag.h"
 #include "TrackContainerView.h"
@@ -64,8 +64,6 @@ SampleClipView::SampleClipView( SampleClip * _clip, TrackView * _tv ) :
 void SampleClipView::updateSample()
 {
 	update();
-
-	m_sampleThumbnail = SampleThumbnail{m_clip->m_sample};
 
 	// set tooltip to filename so that user can see what sample this
 	// sample-clip contains
@@ -129,7 +127,7 @@ void SampleClipView::dropEvent( QDropEvent * _de )
 	}
 	else if( StringPairDrag::decodeKey( _de ) == "sampledata" )
 	{
-		m_clip->setSampleBuffer(SampleLoader::createBufferFromBase64(StringPairDrag::decodeValue(_de)));
+		m_clip->setSampleBuffer(SampleBuffer::fromBase64(StringPairDrag::decodeValue(_de)));
 		m_clip->updateLength();
 		update();
 		_de->accept();
@@ -188,13 +186,13 @@ void SampleClipView::mouseDoubleClickEvent( QMouseEvent * )
 {
 	if (m_trackView->trackContainerView()->knifeMode()) { return; }
 
-	const QString selectedAudioFile = SampleLoader::openAudioFile();
+	const QString selectedAudioFile = FileDialog::openAudioFile();
 
 	if (selectedAudioFile.isEmpty()) { return; }
 	
 	if (!m_clip->hasSampleFileLoaded(selectedAudioFile))
 	{
-		auto sampleBuffer = SampleLoader::createBufferFromFile(selectedAudioFile);
+		auto sampleBuffer = SampleBuffer::fromFile(selectedAudioFile);
 		if (sampleBuffer != SampleBuffer::emptyBuffer())
 		{
 			m_clip->setSampleBuffer(sampleBuffer);
@@ -288,14 +286,14 @@ void SampleClipView::paintEvent( QPaintEvent * pe )
 
 	if (sample.sampleSize() > 0)
 	{
-		const auto param = SampleThumbnail::VisualizeParameters{
-			.sampleRect = QRect(sampleRextX, spacing, sampleLength, height() - spacing),
-			.viewportRect = viewPortRect,
+		const auto param = SampleThumbnailRenderer::VisualizeParameters{
+			.cache = m_clip->sampleThumbnailCache(),
+			.rect = QRect(sampleRextX, spacing, sampleLength, height() - spacing),
 			.amplification = sample.amplification(),
 			.reversed = sample.reversed()
 		};
 
-		m_sampleThumbnail.visualize(param, p);
+		SampleThumbnailRenderer::visualize(param, p);
 	}
 
 	QString name = PathUtil::cleanName(m_clip->m_sample.sampleFile());
@@ -316,7 +314,7 @@ void SampleClipView::paintEvent( QPaintEvent * pe )
 	p.setPen( c.darker( 200 ) );
 	p.drawRect(-m_paintPixmapXPosition, 0, rect().right(), rect().bottom());
 
-	// draw the 'muted' pixmap only if the clip was manualy muted
+	// draw the 'muted' pixmap only if the clip was manually muted
 	if( m_clip->isMuted() )
 	{
 		const int spacing = BORDER_WIDTH;

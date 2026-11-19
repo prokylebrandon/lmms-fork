@@ -29,44 +29,81 @@
 
 #include <type_traits>
 
+#include <QDomDocument>
 #include <QFontMetrics>
 #include <QKeySequence>
+#include <QVariant>
 #include <QWheelEvent>
 
 namespace lmms
 {
 
-/**
- * @brief horizontalAdvance is a backwards-compatible adapter for
- * QFontMetrics::horizontalAdvance and width functions.
- * @param metrics
- * @param text
- * @return text's horizontal advance based on metrics.
- */
-inline int horizontalAdvance(const QFontMetrics& metrics, const QString& text)
+//! @brief Backwards-compatible adapter for `QDropEvent`'s new
+//! `position()` to the old `pos()` method
+//! @param de A drop event
+//! @return The position of the drop event, relative to the receiving
+//! widget or item
+//! @see Qt 6 [`QDropEvent::position()`](https://doc.qt.io/qt-6/qdropevent.html#position)
+//! @see Qt 5.15 [`QDropEvent::pos()`](https://doc.qt.io/archives/qt-5.15/qdropevent.html#pos)
+inline QPoint position(const QDropEvent* de)
 {
-#if (QT_VERSION >= QT_VERSION_CHECK(5, 11, 0))
-	return metrics.horizontalAdvance(text);
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+	return de->position().toPoint();
 #else
-	return metrics.width(text);
+	return de->pos();
 #endif
 }
 
-/**
- * @brief position is a backwards-compatible adapter for
- * QWheelEvent::position and pos functions.
- * @param wheelEvent
- * @return the position of wheelEvent
- */
-inline QPoint position(QWheelEvent *wheelEvent)
+//! @brief Backwards-compatible adapter for `QMouseEvent`'s new
+//! `position()` to the old `pos()` method
+//! @param me A mouse event
+//! @return The position of the mouse event, relative to the receiving
+//! widget or item
+//! @see Qt 6 [`QSinglePointEvent::position()`](https://doc.qt.io/qt-6/qsinglepointevent.html#position)
+//! (inherited by `QMouseEvent`)
+//! @see Qt 5.15 [`QMouseEvent::pos()`](https://doc.qt.io/archives/qt-5.15/qmouseevent.html#pos)
+inline QPoint position(const QMouseEvent* me)
 {
-#if (QT_VERSION >= QT_VERSION_CHECK(5, 15, 0))
-	return wheelEvent->position().toPoint();
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+	return me->position().toPoint();
 #else
-	return wheelEvent->pos();
+	return me->pos();
 #endif
 }
 
+//! @brief Backwards-compatible adapter for `QMouseEvent`'s new
+//! `position()` to the old `localPos()` method
+//! @param me A mouse event
+//! @return The position of the mouse event, relative to the receiving
+//! widget or item
+//! @see Qt 6 [`QSinglePointEvent::position()`](https://doc.qt.io/qt-6/qsinglepointevent.html#position)
+//! (inherited by `QMouseEvent`)
+//! @see Qt 5.15 [`QMouseEvent::localPos()`](https://doc.qt.io/archives/qt-5.15/qmouseevent.html#localPos)
+inline QPointF positionF(const QMouseEvent* me)
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+	return me->position();
+#else
+	return me->localPos();
+#endif
+}
+
+//! @brief Backwards-compatible adapter for `QMouseEvent`'s new
+//! `globalPosition()` to the old `globalPos()` method
+//! @param me A mouse event
+//! @return The global position of the mouse event, relative to the
+//! receiving widget or item
+//! @see Qt 6 [`QSinglePointEvent::globalPosition()`](https://doc.qt.io/qt-6/qsinglepointevent.html#globalPosition)
+//! (inherited by `QMouseEvent`)
+//! @see Qt 5.15 [`QMouseEvent::globalPos()`](https://doc.qt.io/archives/qt-5.15/qmouseevent.html#globalPos)
+inline QPoint globalPosition(const QMouseEvent* me)
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+	return me->globalPosition().toPoint();
+#else
+	return me->globalPos();
+#endif
+}
 
 namespace detail
 {
@@ -77,18 +114,75 @@ inline constexpr bool IsKeyOrModifier = std::is_same_v<T, Qt::Key>
 
 } // namespace detail
 
-
-/**
- * @brief Combines Qt key and modifier arguments together,
- * replacing `A | B` which was deprecated in C++20
- * due to the enums being different types. (P1120R0)
- * @param args Any number of Qt::Key, Qt::Modifier, or Qt::KeyboardModifier
- * @return The combination of the given keys/modifiers as an int
- */
-template<typename... Args, std::enable_if_t<(detail::IsKeyOrModifier<Args> && ...), bool> = true>
-constexpr int combine(Args... args)
+//! @brief Combines Qt key and modifier arguments together
+//!
+//! Combines Qt key and modifier arguments together, replacing `A | B`
+//! which was deprecated in C++20 due to the enums being different
+//! types.
+//!
+//! @param args Any number of `Qt::Key`, `Qt::Modifier`, or `Qt::KeyboardModifier`
+//! @return The combination of the given keys/modifiers as a `QKeySequence`
+//! @see [WG21 P1120R0 “Consistency improvements for `<=>` and other comparison operators”](https://wg21.link/P1120R0)
+template<typename... Args> requires (detail::IsKeyOrModifier<Args> && ...)
+inline QKeySequence keySequence(Args... args)
 {
 	return (0 | ... | static_cast<int>(args));
+}
+
+//! @brief Backwards-compatible adapter for `QVariant`'s new
+//! `typeId()` to the old `type()` method
+//! @param variant A QVariant to get the type id of
+//! @return The type id of the value in @p variant
+//! @see Qt 6 [`QVariant::typeId()`](https://doc.qt.io/qt-6/qvariant.html#typeId)
+//! @see Qt 5.15 [`QVariant::type()`](https://doc.qt.io/archives/qt-5.15/qvariant.html#type)
+inline QMetaType::Type typeId(const QVariant& variant)
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+	return static_cast<QMetaType::Type>(variant.typeId());
+#else
+	return static_cast<QMetaType::Type>(variant.type());
+#endif
+}
+
+//! @brief Backwards-compatible adapter for `QDomDocument::setContent()`
+//! for `QByteArray` input
+//! @see Qt 6.5 [`QDomDocument::setContent()`](https://doc.qt.io/qt-6/qdomdocument.html#setContent)
+//! @see Qt 5.15 [`QDomDocument::setContent()`](https://doc.qt.io/archives/qt-5.15/qdomdocument.html#setContent-4)
+inline bool setContent(QDomDocument& doc, const QByteArray& text,
+	QString* errorMsg = nullptr, int* errorLine = nullptr, int* errorColumn = nullptr)
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 5, 0))
+	auto result = doc.setContent(text, QDomDocument::ParseOption::Default);
+	if (result) { return true; }
+	if (errorMsg) { *errorMsg = std::move(result.errorMessage); }
+	if (errorLine) { *errorLine = static_cast<int>(result.errorLine); }
+	if (errorColumn) { *errorColumn = static_cast<int>(result.errorColumn); }
+	return false;
+#else
+	return doc.setContent(text, errorMsg, errorLine, errorColumn);
+#endif
+}
+
+//! @brief Backwards-compatible adapter for `QDomDocument::setContent()`
+//! for `QIODevice*` input
+//! @see Qt 6.5 [`QDomDocument::setContent()`](https://doc.qt.io/qt-6/qdomdocument.html#setContent)
+//! @see Qt 5.15 [`QDomDocument::setContent()`](https://doc.qt.io/archives/qt-5.15/qdomdocument.html#setContent-2)
+inline bool setContent(QDomDocument& doc, QIODevice* dev, bool namespaceProcessing,
+	QString* errorMsg = nullptr, int* errorLine = nullptr, int* errorColumn = nullptr)
+{
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 5, 0))
+	const auto options = namespaceProcessing
+		? QDomDocument::ParseOption::UseNamespaceProcessing
+		: QDomDocument::ParseOption::Default;
+	auto result = doc.setContent(dev, options);
+	if (result) { return true; }
+	if (errorMsg) { *errorMsg = std::move(result.errorMessage); }
+	if (errorLine) { *errorLine = static_cast<int>(result.errorLine); }
+	if (errorColumn) { *errorColumn = static_cast<int>(result.errorColumn); }
+	return false;
+#else
+	return doc.setContent(dev, namespaceProcessing, errorMsg, errorLine, errorColumn);
+#endif
 }
 
 } // namespace lmms

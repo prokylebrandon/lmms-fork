@@ -31,8 +31,10 @@
 #include "Engine.h"
 #include "GuiApplication.h"
 #include "MainWindow.h"
+#include "MidiClip.h"
 #include "PatternClip.h"
 #include "PatternStore.h"
+#include "PatternTrack.h"
 #include "RenameDialog.h"
 #include "TrackContainerView.h"
 #include "TrackView.h"
@@ -48,6 +50,12 @@ PatternClipView::PatternClipView(Clip* _clip, TrackView* _tv) :
 {
 	connect( _clip->getTrack(), SIGNAL(dataChanged()), 
 			this, SLOT(update()));
+	connect(Engine::patternStore(), &TrackContainer::trackAdded,
+			this, &PatternClipView::update);
+	connect(Engine::patternStore(), &TrackContainer::trackRemoved,
+			this, &PatternClipView::update);
+	connect(Engine::patternStore(), &TrackContainer::trackMoved,
+			this, &PatternClipView::update);
 
 	setStyle( QApplication::style() );
 }
@@ -108,6 +116,13 @@ void PatternClipView::paintEvent(QPaintEvent*)
 	// paint a black rectangle under the clip to prevent glitches with transparent backgrounds
 	p.fillRect( rect(), QColor( 0, 0, 0 ) );
 
+	const int pixelsPerPattern = Engine::patternStore()->lengthOfPattern(m_patternClip->patternIndex()) * pixelsPerBar();
+	int offset = static_cast<int>(m_patternClip->startTimeOffset() * (pixelsPerBar() / TimePos::ticksPerBar()))
+			% pixelsPerPattern;
+	if (offset < 2) {
+		offset += pixelsPerPattern;
+	}
+
 	if( gradient() )
 	{
 		p.fillRect( rect(), lingrad );
@@ -116,15 +131,79 @@ void PatternClipView::paintEvent(QPaintEvent*)
 	{
 		p.fillRect( rect(), c );
 	}
-	
+
+	// Draw notes
+
+	const int patternIndex = static_cast<PatternTrack*>(m_patternClip->getTrack())->patternIndex();
+	// Count the number of non-empty instrument tracks.
+	// Only used midi tracks will be drawn, but empty tracks will still give a bit of empty space for padding.
+	int numberInstrumentTracksUsed = 0;
+	for (const auto& track : Engine::patternStore()->tracks())
+	{
+		const MidiClip* const mClip = dynamic_cast<MidiClip*>(track->getClip(patternIndex));
+		if (mClip && mClip->notes().size() > 0)
+		{
+			numberInstrumentTracksUsed++;
+		}
+	}
+	const auto totalTracks = Engine::patternStore()->tracks().size();
+	const auto numberEmptyTracks = totalTracks - numberInstrumentTracksUsed;
+
+	const float totalHeight = height() * (1.0f - 2 * m_verticalPadding);
+	const float totalHeightForEmptyTracks = totalHeight * numberEmptyTracks / totalTracks * m_emptyTrackHeightRatio;
+	const float totalHeightForTracks = totalHeight - totalHeightForEmptyTracks;
+
+	const float trackHeight = numberInstrumentTracksUsed > 0
+		? totalHeightForTracks / numberInstrumentTracksUsed
+		: 0.f;
+	const float emptyTrackHeight = numberEmptyTracks > 0
+		? totalHeightForEmptyTracks / numberEmptyTracks
+		: 0.f;
+
+	const int verticalNoteSpacing = trackHeight * m_noteVerticalSpacing;
+	const int horizontalNoteSpacing = pixelsPerBar() / TimePos::stepsPerBar() * m_noteHorizontalSpacing;
+
+	// This pixmap is a batching optimization which draws notes into one vertical strip for tiling patterns.
+	QPixmap midiPatternPixmap(pixelsPerPattern, m_paintPixmap.height());
+	midiPatternPixmap.fill(Qt::transparent);
+
+	QPainter pixPainter(&midiPatternPixmap);
+	pixPainter.setPen(Qt::NoPen);
+	const auto noteColor = QColor(m_noteColor.red(), m_noteColor.green(), m_noteColor.blue());
+	pixPainter.setBrush(QBrush(noteColor));
+
+	TimePos longestLength(1);
+	float lastY = height() * m_verticalPadding;
+	for (const auto& track : Engine::patternStore()->tracks())
+	{
+		const MidiClip* const mClip = dynamic_cast<MidiClip*>(track->getClip(patternIndex));
+		if (!mClip || mClip->notes().size() == 0)
+		{
+			lastY += emptyTrackHeight;
+			continue;
+		}
+
+		longestLength = std::max(longestLength, mClip->length());
+		for (const Note* note : mClip->notes())
+		{
+			QRect noteRect = QRect(
+				note->pos() * pixelsPerBar() / TimePos::ticksPerBar(),
+				lastY + verticalNoteSpacing / 2,
+				std::max(1.0f, pixelsPerBar() / TimePos::stepsPerBar() - horizontalNoteSpacing),
+				std::max(1.0f, trackHeight - verticalNoteSpacing)
+			);
+			pixPainter.setOpacity(std::clamp(note->getVolume() / 100.0, 0.2, 1.0));
+			pixPainter.drawRect(noteRect);
+		}
+
+		lastY += trackHeight;
+	}
+	// Compare how long the longest clip view is compared to the underlying pattern. First +1 for ceiling, second +1 for possible previous bar.
+	const int maxPossibleRepetitions = getClip()->length() / longestLength + 1 + 1;
+	p.drawTiledPixmap(offset + horizontalNoteSpacing / 2 - pixelsPerPattern, 0, width() + (maxPossibleRepetitions - 1) * pixelsPerPattern, height(), midiPatternPixmap);
+
 	// bar lines
 	const int lineSize = 3;
-	int pixelsPerPattern = Engine::patternStore()->lengthOfPattern(m_patternClip->patternIndex()) * pixelsPerBar();
-	int offset = static_cast<int>(m_patternClip->startTimeOffset() * (pixelsPerBar() / TimePos::ticksPerBar()))
-			% pixelsPerPattern;
-	if (offset < 2) {
-		offset += pixelsPerPattern;
-	}
 
 	p.setPen( c.darker( 200 ) );
 
@@ -150,7 +229,7 @@ void PatternClipView::paintEvent(QPaintEvent*)
 	p.setPen( c.darker( 300 ) );
 	p.drawRect( 0, 0, rect().right(), rect().bottom() );
 	
-	// draw the 'muted' pixmap only if the clip was manualy muted
+	// draw the 'muted' pixmap only if the clip was manually muted
 	if (m_patternClip->isMuted())
 	{
 		const int spacing = BORDER_WIDTH;

@@ -30,6 +30,7 @@
  *
  */
 
+ #include <cmath>
 
 #include "lmmsconfig.h"
 
@@ -92,6 +93,7 @@
 #include <queue>
 #include <string>
 #include <vector>
+#include <cassert>
 
 #include <aeffectx.h>
 
@@ -244,9 +246,15 @@ public:
 	// determine name of current program
 	const char * programName();
 
-	void getParameterDisplays();
+	void loadAllParameterDisplays();
 
-	void getParameterLabels();
+	void loadAllParameterLabels();
+
+	//! Updates a parameter display that has already been loaded
+	void updateParameterDisplay(int index);
+
+	//! Updates a parameter label that has already been loaded
+	void updateParameterLabel(int index);
 
 	// send name of current program back to host
 	void sendCurrentProgramName();
@@ -668,14 +676,21 @@ bool RemoteVstPlugin::processMessage( const message & _m )
 			//sendMessage( IdVstSetParameter );
 			break;
 
-		case IdVstParameterDisplays:
-			getParameterDisplays();
+		case IdVstLoadAllParameterDisplays:
+			loadAllParameterDisplays();
 			break;
 
-		case IdVstParameterLabels:
-			getParameterLabels();
+		case IdVstLoadAllParameterLabels:
+			loadAllParameterLabels();
 			break;
 
+		case IdVstUpdateParameterDisplay:
+			updateParameterDisplay(_m.getInt());
+			break;
+
+		case IdVstUpdateParameterLabel:
+			updateParameterLabel(_m.getInt());
+			break;
 
 		case IdVstIdleUpdate:
 		{
@@ -812,16 +827,24 @@ void RemoteVstPlugin::initEditor()
 	pluginDispatch( effEditOpen, 0, 0, m_window );
 
 	ERect* er = nullptr;
-	pluginDispatch( effEditGetRect, 0, 0, &er );
+	pluginDispatch(effEditGetRect, 0, 0, &er);
 
-	m_windowWidth = er->right - er->left;
-	m_windowHeight = er->bottom - er->top;
+	if (er)
+	{
+		assert(er->right > er->left);
+		m_windowWidth = er->right - er->left;
+		assert(er->bottom > er->top);
+		m_windowHeight = er->bottom - er->top;
 
-	RECT windowSize = { 0, 0, m_windowWidth, m_windowHeight };
-	AdjustWindowRect( &windowSize, dwStyle, false );
-	SetWindowPos( m_window, 0, 0, 0, windowSize.right - windowSize.left,
-			windowSize.bottom - windowSize.top, SWP_NOACTIVATE |
-						SWP_NOMOVE | SWP_NOZORDER );
+		RECT windowSize = { 0, 0, m_windowWidth, m_windowHeight };
+		AdjustWindowRect(&windowSize, dwStyle, false);
+		SetWindowPos(m_window, 0, 0, 0,
+			windowSize.right - windowSize.left,
+			windowSize.bottom - windowSize.top,
+			SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER
+		);
+	}
+
 	pluginDispatch( effEditTop );
 
 #ifdef LMMS_BUILD_LINUX
@@ -833,36 +856,42 @@ void RemoteVstPlugin::initEditor()
 
 #else
 	Atom prop_atom, val_atom;
-	
+
 	if (m_display == nullptr)
 	{
 		m_display = XOpenDisplay(nullptr);
 	}
 	m_window = XCreateSimpleWindow(m_display, DefaultRootWindow(m_display), 0, 0, 400, 400, 0, 0, 0);
-	
+
 	m_wmDeleteMessage = XInternAtom(m_display, "WM_DELETE_WINDOW", false);
 	XSetWMProtocols(m_display, m_window, &m_wmDeleteMessage, 1);
-	
+
 	// make tool window
 	prop_atom = XInternAtom(m_display, "_NET_WM_WINDOW_TYPE", False);
 	val_atom = XInternAtom(m_display, "_NET_WM_WINDOW_TYPE_DIALOG", False);
 	XChangeProperty(m_display, m_window, prop_atom, XA_ATOM, 32, PropModeReplace, (unsigned char *)&val_atom, 1);
-	
+
 	// change name
 	XStoreName(m_display, m_window, pluginName());
-	
+
 	ERect* er = nullptr;
 	pluginDispatch(effEditGetRect, 0, 0, &er);
 
-	m_windowWidth = er->right - er->left;
-	m_windowHeight = er->bottom - er->top;
-	XResizeWindow(m_display, m_window, m_windowWidth, m_windowHeight);
-	
+	if (er)
+	{
+		assert(er->right > er->left);
+		m_windowWidth = er->right - er->left;
+		assert(er->bottom > er->top);
+		m_windowHeight = er->bottom - er->top;
+		XResizeWindow(m_display, m_window,
+			static_cast<unsigned int>(m_windowWidth), static_cast<unsigned int>(m_windowHeight));
+	}
+
 	XMapWindow(m_display, m_window);
 	XFlush(m_display);
-	
+
 	pluginDispatch(effEditOpen, 0, (intptr_t) m_display, (void*) m_window);
-	
+
 	XSelectInput(m_display, m_window, SubstructureNotifyMask | ButtonPressMask | ButtonReleaseMask
 			| ButtonMotionMask | ExposureMask | KeyPressMask);
 	
@@ -995,13 +1024,14 @@ bool RemoteVstPlugin::load( const std::string & _plugin_file )
 		return false;
 	}
 
+	const char id[5] = {
+		static_cast<char>(m_plugin->uniqueID >> 24),
+		static_cast<char>(m_plugin->uniqueID >> 16),
+		static_cast<char>(m_plugin->uniqueID >>  8),
+		static_cast<char>(m_plugin->uniqueID      ),
+		0
+	};
 
-	char id[5];
-	sprintf( id, "%c%c%c%c", ((char *)&m_plugin->uniqueID)[3],
-					 ((char *)&m_plugin->uniqueID)[2],
-					 ((char *)&m_plugin->uniqueID)[1],
-					 ((char *)&m_plugin->uniqueID)[0] );
-	id[4] = 0;
 	sendMessage( message( IdVstPluginUniqueID ).addString( id ) );
 
 	pluginDispatch( effOpen );
@@ -1185,7 +1215,7 @@ const char * RemoteVstPlugin::programName()
 
 
 // join the ParameterDisplays (stringified values without units) and send them to host
-void RemoteVstPlugin::getParameterDisplays()
+void RemoteVstPlugin::loadAllParameterDisplays()
 {
 	std::string paramDisplays;
 	static char buf[9]; // buffer for getting string
@@ -1200,13 +1230,13 @@ void RemoteVstPlugin::getParameterDisplays()
 		paramDisplays += buf;
 	}
 
-	sendMessage( message( IdVstParameterDisplays ).addString( paramDisplays.c_str() ) );
+	sendMessage(message(IdVstLoadAllParameterDisplays).addString(std::move(paramDisplays)));
 }
 
 
 
 // join the ParameterLabels (units) and send them to host
-void RemoteVstPlugin::getParameterLabels()
+void RemoteVstPlugin::loadAllParameterLabels()
 {
 	std::string paramLabels;
 	static char buf[9]; // buffer for getting string
@@ -1221,7 +1251,35 @@ void RemoteVstPlugin::getParameterLabels()
 		paramLabels += buf;
 	}
 
-	sendMessage( message( IdVstParameterLabels ).addString( paramLabels.c_str() ) );
+	sendMessage(message(IdVstLoadAllParameterLabels).addString(std::move(paramLabels)));
+}
+
+
+
+
+void RemoteVstPlugin::updateParameterDisplay(int index)
+{
+	assert(index < m_plugin->numParams);
+
+	static char display[9] = {};
+	pluginDispatch(effGetParamDisplay, index, 0, display);
+	display[8] = '\0';
+
+	sendMessage(message(IdVstUpdateParameterDisplay).addInt(index).addString(display));
+}
+
+
+
+
+void RemoteVstPlugin::updateParameterLabel(int index)
+{
+	assert(index < m_plugin->numParams);
+
+	static char label[9] = {};
+	pluginDispatch(effGetParamLabel, index, 0, label);
+	label[8] = '\0';
+
+	sendMessage(message(IdVstUpdateParameterLabel).addInt(index).addString(label));
 }
 
 
@@ -1229,10 +1287,14 @@ void RemoteVstPlugin::getParameterLabels()
 
 void RemoteVstPlugin::sendCurrentProgramName()
 {
-	char presName[64];
-	sprintf( presName, "%d/%d: %s", pluginDispatch( effGetProgram ) + 1, m_plugin->numPrograms, programName() );
-
-	sendMessage( message( IdVstCurrentProgramName ).addString( presName ) );
+	char presName[64] = {};
+	std::snprintf(presName, sizeof(presName),
+		"%d/%d: %s",
+		pluginDispatch(effGetProgram) + 1,
+		m_plugin->numPrograms,
+		programName()
+	);
+	sendMessage(message(IdVstCurrentProgramName).addString(presName));
 }
 
 
@@ -1357,36 +1419,46 @@ void RemoteVstPlugin::rotateProgram( int offset )
 
 void RemoteVstPlugin::getProgramNames()
 {
-	char presName[1024+256*30];
-	char curProgName[30];
-	if (isInitialized() == false) return;
-	bool progNameIndexed = pluginDispatch(effGetProgramNameIndexed, 0, -1, curProgName) == 1;
+	char presName[1024 + 256 * 30] = {};
+	char curProgName[30] = {};
+	if (!isInitialized()) { return; }
+	const bool progNameIndexed = pluginDispatch(effGetProgramNameIndexed, 0, -1, curProgName) == 1;
 
-	if (m_plugin->numPrograms > 1) {
-		if (progNameIndexed) {
-			for (int i = 0; i< (m_plugin->numPrograms >= 256?256:m_plugin->numPrograms); i++)
+	if (m_plugin->numPrograms > 1)
+	{
+		const auto maxPrograms = std::min(m_plugin->numPrograms, 256);
+		if (progNameIndexed)
+		{
+			for (int i = 0; i < maxPrograms; i++)
 			{
 				pluginDispatch(effGetProgramNameIndexed, i, -1, curProgName);
-				if (i == 0) 	sprintf( presName, "%s", curProgName );
-				else		sprintf( presName + strlen(presName), "|%s", curProgName );
+				if (i == 0) { std::snprintf(presName, sizeof(presName), "%s", curProgName); }
+				else
+				{
+					const auto len = std::strlen(presName);
+					std::snprintf(presName + len, sizeof(presName) - len, "|%s", curProgName);
+				}
 			}
 		}
 		else
 		{
-			int currProgram = pluginDispatch( effGetProgram );
-			for (int i = 0; i< (m_plugin->numPrograms >= 256?256:m_plugin->numPrograms); i++)
+			const int currProgram = pluginDispatch(effGetProgram);
+			for (int i = 0; i < maxPrograms; i++)
 			{
-				pluginDispatch( effSetProgram, 0, i );
-				if (i == 0) 	sprintf( presName, "%s", programName() );
-				else		sprintf( presName + strlen(presName), "|%s", programName() );
+				pluginDispatch(effSetProgram, 0, i);
+				if (i == 0) { std::snprintf(presName, sizeof(presName), "%s", programName()); }
+				else
+				{
+					const auto len = std::strlen(presName);
+					std::snprintf(presName + len, sizeof(presName) - len, "|%s", programName());
+				}
 			}
-			pluginDispatch( effSetProgram, 0, currProgram );
+			pluginDispatch(effSetProgram, 0, currProgram);
 		}
-	} else sprintf( presName, "%s", programName() );
+	}
+	else { std::snprintf(presName, sizeof(presName), "%s", programName()); }
 
-	presName[sizeof(presName)-1] = 0;
-
-	sendMessage( message( IdVstProgramNames ).addString( presName ) );
+	sendMessage(message(IdVstProgramNames).addString(presName));
 }
 
 
@@ -1710,19 +1782,12 @@ int RemoteVstPlugin::updateInOutCount()
 
 	setInputOutputCount( inputCount(), outputCount() );
 
-	char buf[64];
-	sprintf( buf, "inputs: %d  output: %d\n", inputCount(), outputCount() );
-	debugMessage( buf );
+	char buf[64] = {};
+	std::snprintf(buf, sizeof(buf), "inputs: %d; outputs: %d\n", inputCount(), outputCount());
+	debugMessage(buf);
 
-	if( inputCount() > 0 )
-	{
-		m_inputs = new float * [inputCount()];
-	}
-
-	if( outputCount() > 0 )
-	{
-		m_outputs = new float * [outputCount()];
-	}
+	if (inputCount() > 0) { m_inputs = new float*[inputCount()]; }
+	if (outputCount() > 0) { m_outputs = new float*[outputCount()]; }
 
 	return 1;
 }
@@ -1750,9 +1815,9 @@ intptr_t RemoteVstPlugin::hostCallback( AEffect * _effect, int32_t _opcode,
 {
 	static VstTimeInfo _timeInfo;
 #ifdef DEBUG_CALLBACKS
-	char buf[64];
-	sprintf( buf, "host-callback, opcode = %d\n", (int) _opcode );
-	SHOW_CALLBACK( buf );
+	char buf[64] = {};
+	std::snprintf(buf, sizeof(buf), "host-callback, opcode = %d\n", static_cast<int>(_opcode));
+	SHOW_CALLBACK(buf);
 #endif
 
 	// workaround for early callbacks by some plugins
@@ -1761,6 +1826,7 @@ intptr_t RemoteVstPlugin::hostCallback( AEffect * _effect, int32_t _opcode,
 		__plugin->m_plugin = _effect;
 	}
 
+	const auto p = static_cast<char*>(_ptr);
 	switch( _opcode )
 	{
 		case audioMasterAutomate:
@@ -2055,15 +2121,14 @@ intptr_t RemoteVstPlugin::hostCallback( AEffect * _effect, int32_t _opcode,
 			SHOW_CALLBACK( "amc: audioMasterGetVendorString\n" );
 			// fills <ptr> with a string identifying the vendor
 			// (max 64 char)
-			strcpy( (char *) _ptr, "Tobias Doerffel" );
+			std::strcpy(p, "Tobias Doerffel");
 			return 1;
 
 		case audioMasterGetProductString:
 			SHOW_CALLBACK( "amc: audioMasterGetProductString\n" );
 			// fills <ptr> with a string with product name
 			// (max 64 char)
-			strcpy( (char *) _ptr,
-					"LMMS VST Support Layer (LVSL)" );
+			std::strcpy(p, "LMMS VST Support Layer (LVSL)");
 			return 1;
 
 		case audioMasterGetVendorVersion:
@@ -2077,12 +2142,12 @@ intptr_t RemoteVstPlugin::hostCallback( AEffect * _effect, int32_t _opcode,
 			return 0;
 
 		case audioMasterCanDo:
-			SHOW_CALLBACK( "amc: audioMasterCanDo\n" );
-			return !strcmp( (char *) _ptr, "sendVstEvents" ) ||
-				!strcmp( (char *) _ptr, "sendVstMidiEvent" ) ||
-				!strcmp( (char *) _ptr, "sendVstTimeInfo" ) ||
-				!strcmp( (char *) _ptr, "sizeWindow" ) ||
-				!strcmp( (char *) _ptr, "supplyIdle" );
+			SHOW_CALLBACK("amc: audioMasterCanDo\n");
+			return !(std::strcmp(p, "sendVstEvents")
+				&& std::strcmp(p, "sendVstMidiEvent")
+				&& std::strcmp(p, "sendVstTimeInfo")
+				&& std::strcmp(p, "sizeWindow")
+				&& std::strcmp(p, "supplyIdle"));
 
 		case audioMasterGetLanguage:
 			SHOW_CALLBACK( "amc: audioMasterGetLanguage\n" );

@@ -85,9 +85,12 @@ int AudioFileDevice::writeData( const void* data, int len )
 {
 	if( m_outputFile.isOpen() )
 	{
-		return m_outputFile.write( (const char *) data, len );
+		const auto written = m_outputFile.write( (const char *) data, len );
+		if (written != len) { setWriteError(); }
+		return written;
 	}
 
+	setWriteError();
 	return -1;
 }
 

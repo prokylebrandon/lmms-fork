@@ -24,7 +24,6 @@
 
 #include "Plugin.h"
 
-#include <QtGlobal>
 #include <QDomElement>
 #include <QLibrary>
 #include <QMessageBox>
@@ -169,14 +168,6 @@ void Plugin::loadFile( const QString & )
 {
 }
 
-
-
-
-AutomatableModel * Plugin::childModel( const QString & )
-{
-	static FloatModel fm;
-	return &fm;
-}
 
 
 

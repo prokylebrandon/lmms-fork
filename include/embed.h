@@ -32,41 +32,38 @@
 #include <QString>
 
 #include "lmms_export.h"
+#ifdef PLUGIN_NAME
 #include "LmmsCommonMacros.h"
-
+#endif
 
 namespace lmms {
 
 namespace embed {
 
-/**
- * Return an image for the icon pixmap cache.
- *
- * @param name Identifier for the pixmap. If it is not in the icon pixmap
- *   cache, it will be loaded from the artwork QDir search paths (exceptions are
- *   compiled-in XPMs, you need to provide @p xpm for loading them).
- * @param xpm Must be XPM data if the source should be raw XPM data instead of
- *   a file
- */
-auto LMMS_EXPORT getIconPixmap(std::string_view name,
-	int width = -1, int height = -1, const char* const* xpm = nullptr) -> QPixmap;
+//! @brief Return an image for the icon pixmap cache.
+//! @param name Identifier for the pixmap. If it is not in the icon pixmap cache, it will be loaded from the artwork
+//! QDir search paths (exceptions are compiled-in XPMs, you need to provide @p xpm for loading them).
+//! @param width A specific pixmap width. When this and @p height are provided, the pixmap is cached.
+//! @param height A specific pixmap height. When this and @p width are provided, the pixmap is cached.
+//! @param xpm Must be XPM data if the source should be raw XPM data instead of a file
+auto LMMS_EXPORT getIconPixmap(
+	std::string_view name,
+	int width = -1,
+	int height = -1,
+	const char* const* xpm = nullptr
+) -> QPixmap;
+
 auto LMMS_EXPORT getText(std::string_view name) -> QString;
 
-/**
- * @brief Temporary shim for QPixmap::deviceIndependentSize.
- * @param pixmap The pixmap to get the size of.
- * @return The device-independent size of the pixmap.
- */
-#if QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
-[[deprecated("Use QPixmap::deviceIndependentSize() instead; See "
-             "https://doc.qt.io/qt-6/qpixmap.html#deviceIndependentSize")]]
-#endif
-inline auto logicalSize(const QPixmap &pixmap) noexcept
+//! @brief Temporary shim for QPixmap::deviceIndependentSize.
+//! @param pixmap The pixmap to get the size of.
+//! @return The device-independent size of the pixmap.
+inline auto logicalSize(const QPixmap& pixmap) noexcept
 {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
 	return pixmap.deviceIndependentSize().toSize();
 #else
-	return pixmap.isNull() ? QSize() : pixmap.size() / pixmap.devicePixelRatio();
+	return pixmap.isNull() ? QSize(0, 0) : pixmap.size() / pixmap.devicePixelRatio();
 #endif
 }
 

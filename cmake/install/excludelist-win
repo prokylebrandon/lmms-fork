@@ -16,6 +16,7 @@ ole32.dll
 OLEAUT32.dll
 OPENGL32.DLL
 SHELL32.dll
+SHLWAPI.dll
 USER32.dll
 userenv.dll
 UxTheme.dll
@@ -25,3 +26,17 @@ WS2_32.dll
 RPCRT4.dll
 dsound.dll
 SETUPAPI.dll
+CRYPT32.dll
+BCRYPT.dll
+SECUR32.dll
+NCRYPT.dll
+WLDAP32.dll
+NORMALIZ.dll
+IPHLPAPI.dll
+DNSAPI.dll
+MSWSOCK.dll
+WINHTTP.dll
+CFGMGR32.dll
+WTSAPI32.dll
+PSAPI.dll
+DBGHELP.dll

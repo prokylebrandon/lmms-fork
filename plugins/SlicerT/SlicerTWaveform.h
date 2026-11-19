@@ -25,14 +25,8 @@
 #ifndef LMMS_GUI_SLICERT_WAVEFORM_H
 #define LMMS_GUI_SLICERT_WAVEFORM_H
 
-#include <QApplication>
 #include <QElapsedTimer>
-#include <QFontMetrics>
-#include <QInputDialog>
-#include <QMouseEvent>
-#include <QPainter>
-
-#include "SampleThumbnail.h"
+#include <QWidget>
 
 namespace lmms {
 
@@ -110,8 +104,6 @@ private:
 	QPixmap m_editorWaveform;
 	QPixmap m_sliceEditor;
 	QPixmap m_emptySampleIcon;
-	
-	SampleThumbnail m_sampleThumbnail;
 
 	SlicerT* m_slicerTParent;
 

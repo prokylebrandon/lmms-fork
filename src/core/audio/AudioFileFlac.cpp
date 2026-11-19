@@ -22,13 +22,10 @@
  *
  */
 
-#include <QtGlobal>
 
 #include <cmath>
-#include <memory>
 
 #include "AudioFileFlac.h"
-#include "endian_handling.h"
 #include "AudioEngine.h"
 
 namespace lmms
@@ -89,7 +86,7 @@ bool AudioFileFlac::startEncoding()
 	return true;
 }
 
-void AudioFileFlac::writeBuffer(const SampleFrame* _ab, fpp_t const frames)
+void AudioFileFlac::writeBuffer(const SampleFrame* _ab, f_cnt_t const frames)
 {
 	OutputSettings::BitDepth depth = getOutputSettings().getBitDepth();
 	float clipvalue = std::nextafterf( -1.0f, 0.0f );
@@ -97,7 +94,7 @@ void AudioFileFlac::writeBuffer(const SampleFrame* _ab, fpp_t const frames)
 	if (depth == OutputSettings::BitDepth::Depth24Bit || depth == OutputSettings::BitDepth::Depth32Bit) // Float encoding
 	{
 		auto buf = std::vector<sample_t>(frames * channels());
-		for(fpp_t frame = 0; frame < frames; ++frame)
+		for(f_cnt_t frame = 0; frame < frames; ++frame)
 		{
 			for(ch_cnt_t channel=0; channel<channels(); ++channel)
 			{
@@ -107,13 +104,13 @@ void AudioFileFlac::writeBuffer(const SampleFrame* _ab, fpp_t const frames)
 				buf[frame*channels() + channel] = std::max(clipvalue, _ab[frame][channel]);
 			}
 		}
-		sf_writef_float(m_sf, static_cast<float*>(buf.data()), frames);
+		if (sf_writef_float(m_sf, static_cast<float*>(buf.data()), frames) != static_cast<sf_count_t>(frames)) { setWriteError(); }
 	}
 	else // integer PCM encoding
 	{
 		auto buf = std::vector<int_sample_t>(frames * channels());
-		convertToS16(_ab, frames, buf.data(), !isLittleEndian());
-		sf_writef_short(m_sf, static_cast<short*>(buf.data()), frames);
+		toInt16leInterleaved(_ab, frames, buf.data());
+		if (sf_writef_short(m_sf, static_cast<short*>(buf.data()), frames) != static_cast<sf_count_t>(frames)) { setWriteError(); }
 	}
 
 }

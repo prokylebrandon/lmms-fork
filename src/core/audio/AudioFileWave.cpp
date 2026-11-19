@@ -24,7 +24,6 @@
  */
 
 #include "AudioFileWave.h"
-#include "endian_handling.h"
 #include "AudioEngine.h"
 
 
@@ -93,29 +92,29 @@ bool AudioFileWave::startEncoding()
 	return true;
 }
 
-void AudioFileWave::writeBuffer(const SampleFrame* _ab, const fpp_t _frames)
+void AudioFileWave::writeBuffer(const SampleFrame* _ab, const f_cnt_t _frames)
 {
 	OutputSettings::BitDepth bitDepth = getOutputSettings().getBitDepth();
 
 	if( bitDepth == OutputSettings::BitDepth::Depth32Bit || bitDepth == OutputSettings::BitDepth::Depth24Bit )
 	{
 		auto buf = new float[_frames * channels()];
-		for( fpp_t frame = 0; frame < _frames; ++frame )
+		for( f_cnt_t frame = 0; frame < _frames; ++frame )
 		{
 			for( ch_cnt_t chnl = 0; chnl < channels(); ++chnl )
 			{
 				buf[frame * channels() + chnl] = _ab[frame][chnl];
 			}
 		}
-		sf_writef_float( m_sf, buf, _frames );
+		if (sf_writef_float( m_sf, buf, _frames ) != static_cast<sf_count_t>(_frames)) { setWriteError(); }
 		delete[] buf;
 	}
 	else
 	{
 		auto buf = new int_sample_t[_frames * channels()];
-		convertToS16(_ab, _frames, buf, !isLittleEndian());
+		toInt16leInterleaved(_ab, _frames, buf);
 
-		sf_writef_short( m_sf, buf, _frames );
+		if (sf_writef_short( m_sf, buf, _frames ) != static_cast<sf_count_t>(_frames)) { setWriteError(); }
 		delete[] buf;
 	}
 }

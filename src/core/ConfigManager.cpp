@@ -24,7 +24,6 @@
 
 #include "ConfigManager.h"
 
-#include <PathUtil.h>
 #include <QApplication>
 #include <QDir>
 #include <QDomElement>
@@ -32,8 +31,10 @@
 #include <QStandardPaths>
 #include <QTextStream>
 
+#include "DeprecationHelper.h"
 #include "GuiApplication.h"
 #include "MainWindow.h"
+#include "PathUtil.h"
 #include "ProjectVersion.h"
 #include "lmmsversion.h"
 
@@ -74,6 +75,7 @@ ConfigManager::ConfigManager() :
 	}
 	m_dataDir = "data:/";
 	m_vstDir = m_workingDir + "vst/";
+	m_vst3Dir = m_workingDir + "vst3/";
 	m_sf2Dir = m_workingDir + SF2_PATH;
 	m_gigDir = m_workingDir + GIG_PATH;
 	m_themeDir = defaultThemeDir();
@@ -202,7 +204,7 @@ QStringList ConfigManager::availableVstEmbedMethods()
 #ifdef LMMS_BUILD_WIN32
 	methods.append("win32");
 #endif
-#ifdef LMMS_BUILD_LINUX
+#if defined(LMMS_BUILD_LINUX) && (QT_VERSION < QT_VERSION_CHECK(6,0,0))
 	if (static_cast<QGuiApplication*>(QApplication::instance())->
 		platformName() == "xcb")
 	{
@@ -215,8 +217,8 @@ QStringList ConfigManager::availableVstEmbedMethods()
 QString ConfigManager::vstEmbedMethod() const
 {
 	QStringList methods = availableVstEmbedMethods();
-	QString defaultMethod = *(methods.end() - 1);
-	QString currentMethod = value( "ui", "vstembedmethod", defaultMethod );
+	QString defaultMethod = "none";
+	QString currentMethod = value("ui", "vstembedmethod", defaultMethod);
 	return methods.contains(currentMethod) ? currentMethod : defaultMethod;
 }
 
@@ -237,6 +239,14 @@ void ConfigManager::setWorkingDir(const QString & workingDir)
 void ConfigManager::setVSTDir(const QString & vstDir)
 {
 	m_vstDir = ensureTrailingSlash(vstDir);
+}
+
+
+
+
+void ConfigManager::setVST3Dir(const QString & vst3Dir)
+{
+	m_vst3Dir = ensureTrailingSlash(vst3Dir);
 }
 
 
@@ -429,7 +439,7 @@ void ConfigManager::loadConfigFile(const QString & configFile)
 	{
 		QString errorString;
 		int errorLine, errorCol;
-		if(dom_tree.setContent(&cfg_file, false, &errorString, &errorLine, &errorCol))
+		if (lmms::setContent(dom_tree, &cfg_file, false, &errorString, &errorLine, &errorCol))
 		{
 			// get the head information from the DOM
 			QDomElement root = dom_tree.documentElement();
@@ -526,6 +536,7 @@ void ConfigManager::loadConfigFile(const QString & configFile)
 			setGIGDir(value("paths", "gigdir") == "" ? gigDir() : value("paths", "gigdir"));
 			setSF2Dir(value("paths", "sf2dir") == "" ? sf2Dir() : value("paths", "sf2dir"));
 			setVSTDir(value("paths", "vstdir"));
+			setVST3Dir(value("paths", "vst3dir"));
 			setLADSPADir(value("paths", "ladspadir"));
 		#ifdef LMMS_HAVE_STK
 			setSTKDir(value("paths", "stkdir"));
@@ -556,6 +567,21 @@ void ConfigManager::loadConfigFile(const QString & configFile)
 		m_vstDir =  programFiles + "/VstPlugins/";
 #else
 		m_vstDir =  m_workingDir + "plugins/vst/";
+#endif
+	}
+
+	// Same recursive-search safety check for VST3 (Task 1, batch 2).
+	// CommonProgramFiles/VST3 is VST3's real standard system location,
+	// the direct equivalent of ProgramFiles/VstPlugins for VST2.
+	if( m_vst3Dir.isEmpty() || m_vst3Dir == QDir::separator() || m_vst3Dir == "/" ||
+			m_vst3Dir == ensureTrailingSlash( QDir::homePath() ) ||
+			!QDir( m_vst3Dir ).exists() )
+	{
+#ifdef LMMS_BUILD_WIN32
+		QString commonProgramFiles = QString::fromLocal8Bit(getenv("CommonProgramFiles"));
+		m_vst3Dir =  commonProgramFiles + "/VST3/";
+#else
+		m_vst3Dir =  m_workingDir + "plugins/vst3/";
 #endif
 	}
 
@@ -619,6 +645,7 @@ void ConfigManager::saveConfigFile()
 	setValue("paths", "theme", m_themeDir);
 	setValue("paths", "workingdir", m_workingDir);
 	setValue("paths", "vstdir", m_vstDir);
+	setValue("paths", "vst3dir", m_vst3Dir);
 	setValue("paths", "gigdir", m_gigDir);
 	setValue("paths", "sf2dir", m_sf2Dir);
 	setValue("paths", "ladspadir", m_ladspaDir);

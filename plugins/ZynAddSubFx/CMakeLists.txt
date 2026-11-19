@@ -10,7 +10,7 @@ find_package(ZLIB REQUIRED)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # definitions for ZynAddSubFX
-IF(LMMS_BUILD_LINUX OR LMMS_BUILD_APPLE OR LMMS_BUILD_OPENBSD OR LMMS_BUILD_FREEBSD)
+IF(LMMS_BUILD_LINUX OR LMMS_BUILD_APPLE OR LMMS_BUILD_OPENBSD OR LMMS_BUILD_FREEBSD OR LMMS_BUILD_CYGWIN)
 	FIND_PACKAGE(X11)
 	include_directories(SYSTEM ${X11_INCLUDE_DIR})
 	ADD_DEFINITIONS(-DOS_LINUX)
@@ -23,8 +23,13 @@ if(NOT MSVC AND (LMMS_HOST_X86 OR LMMS_HOST_X86_64))
 	ADD_DEFINITIONS(-DASM_F2I_YES)
 endif()
 
-# build ZynAddSubFX with full optimizations
-if(NOT MSVC)
+if(MSVC)
+	# enable updated C++ language standards, disable certain permissive behavior
+	set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} /Zc:__cplusplus /permissive-")
+	# workaround _WIN32 vs WIN32 differences
+	add_compile_definitions(WIN32)
+else()
+	# build ZynAddSubFX with full optimizations, treat nonconformant code as warnings
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -fpermissive")
 endif()
 
@@ -126,8 +131,8 @@ target_static_libraries(ZynAddSubFxCore PUBLIC
 target_link_libraries(ZynAddSubFxCore INTERFACE
 	${FFTW3F_LIBRARIES}
 	${QT_LIBRARIES}
-	Qt5::Widgets
-	Qt5::Xml
+	Qt${QT_VERSION_MAJOR}::Widgets
+	Qt${QT_VERSION_MAJOR}::Xml
 	Threads::Threads
 	ZLIB::ZLIB
 )
@@ -187,12 +192,22 @@ IF(FLTK_CONFIG AND NOT (LMMS_BUILD_APPLE OR LMMS_BUILD_WIN32))
 ENDIF()
 target_link_libraries(RemoteZynAddSubFx ${FLTK_FILTERED_LDFLAGS})
 
+# Ensure zynaddsubfx_gui has the include directories it needs (#8535)
+if(FLTK_CONFIG AND NOT LMMS_BUILD_WIN32)
+	execute_process(COMMAND ${FLTK_CONFIG} --cxxflags OUTPUT_VARIABLE _fltk_include_dirs OUTPUT_STRIP_TRAILING_WHITESPACE)
+	string(REPLACE " " ";" _fltk_include_dirs ${_fltk_include_dirs})
+	list(REMOVE_DUPLICATES _fltk_include_dirs)
+	list(FILTER _fltk_include_dirs INCLUDE REGEX "^-I.+")
+	list(TRANSFORM _fltk_include_dirs REPLACE "^-I(.+)" "\\1")
+	target_include_directories(zynaddsubfx_gui SYSTEM PUBLIC ${_fltk_include_dirs})
+endif()
+
 if(LMMS_HAVE_LIBRT)
 	target_link_libraries(RemoteZynAddSubFx rt)
 endif()
 
 # Support qt_version_tag in Qt 5.6
-TARGET_LINK_LIBRARIES(RemoteZynAddSubFx Qt5::Core)
+TARGET_LINK_LIBRARIES(RemoteZynAddSubFx Qt${QT_VERSION_MAJOR}::Core)
 
 # link Qt libraries when on win32
 IF(LMMS_BUILD_WIN32)

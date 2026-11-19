@@ -32,9 +32,12 @@
 #include <QMutex>
 #include <samplerate.h>
 
+#include "AudioEngine.h"
+#include "AudioResampler.h"
 #include "Instrument.h"
 #include "InstrumentView.h"
 #include "LcdSpinBox.h"
+#include "SampleFrame.h"
 
 class QLabel;
 
@@ -42,7 +45,6 @@ namespace lmms
 {
 
 
-class Sf2Font;
 struct Sf2PluginData;
 class NotePlayHandle;
 
@@ -77,7 +79,8 @@ public:
 
 	void loadFile( const QString & _file ) override;
 
-	AutomatableModel * childModel( const QString & _modelName ) override;
+	auto midiPatch() const -> std::optional<MidiPatch> override;
+	AutomatableModel* childModel(std::string_view modelName) override;
 
 	QString nodeName() const override;
 
@@ -104,7 +107,9 @@ public slots:
 	void updateTuning();
 
 private:
-	SRC_STATE * m_srcState;
+	AudioResampler m_resampler;
+	std::array<SampleFrame, DEFAULT_BUFFER_SIZE> m_buffer;
+	std::span<SampleFrame> m_bufferView;
 
 	fluid_settings_t* m_settings;
 	fluid_synth_t* m_synth;

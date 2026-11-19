@@ -25,9 +25,12 @@
 #ifndef LMMS_PATHUTIL_H
 #define LMMS_PATHUTIL_H
 
-#include "lmms_export.h"
+#include <filesystem>
+#include <string_view>
 
 #include <QDir>
+
+#include "lmms_export.h"
 
 namespace lmms::PathUtil
 {
@@ -48,26 +51,37 @@ namespace lmms::PathUtil
 	QString LMMS_EXPORT basePrefix(const Base base);
 	//! Check the prefix of a path and return the base it corresponds to
 	//! Defaults to Base::Absolute
-	Base LMMS_EXPORT baseLookup(const QString & path);
+	Base LMMS_EXPORT baseLookup(const QString& input);
 
 	//! Remove the prefix from a path, iff there is one
-	QString LMMS_EXPORT stripPrefix(const QString & path);
+	QString LMMS_EXPORT stripPrefix(const QString& input);
 	//! Get the filename for a path, handling prefixed paths correctly
-	QString LMMS_EXPORT cleanName(const QString & path);
+	QString LMMS_EXPORT cleanName(const QString& input);
 
 	//! Upgrade prefix-less relative paths to the new format
-	QString LMMS_EXPORT oldRelativeUpgrade(const QString & input);
+	QString LMMS_EXPORT oldRelativeUpgrade(const QString& input);
 
 	//! Make this path absolute. If a pointer to boolean is given
 	//! it will indicate whether the path was converted successfully
-	QString LMMS_EXPORT toAbsolute(const QString & input, bool* error = nullptr);
+	QString LMMS_EXPORT toAbsolute(const QString& input, bool* error = nullptr);
 	//! Make this path relative to a given base, return an absolute path if that fails
-	QString LMMS_EXPORT relativeOrAbsolute(const QString & input, const Base base);
+	QString LMMS_EXPORT relativeOrAbsolute(const QString& input, const Base base);
 	//! Make this path relative to any base, choosing the shortest if there are
 	//! multiple options. allowLocal defines whether local paths should be considered.
 	//! Defaults to an absolute path if all bases fail.
-	QString LMMS_EXPORT toShortestRelative(const QString & input, bool allowLocal = false);
+	QString LMMS_EXPORT toShortestRelative(const QString& input, bool allowLocal = false);
 
+	//! Converts a UTF-8 encoded string to std::filesystem::path
+	LMMS_EXPORT auto stringToPath(std::string_view path) -> std::filesystem::path;
+
+	//! Converts QString to std::filesystem::path
+	LMMS_EXPORT auto stringToPath(const QString& path) -> std::filesystem::path;
+
+	//! Converts std::filesystem::path to a UTF-8 encoded std::string
+	LMMS_EXPORT auto pathToString(const std::filesystem::path& path) -> std::string;
+
+	//! Converts std::filesystem::path to QString
+	LMMS_EXPORT auto pathToQString(const std::filesystem::path& path) -> QString;
 } // namespace lmms::PathUtil
 
 #endif // LMMS_PATHUTIL_H

@@ -38,6 +38,7 @@ SET(LMMS_PLUGIN_LIST
 	DynamicsProcessor
 	Eq
 	Flanger
+	FrequencyShifter
 	GranularPitchShifter
 	HydrogenImport
 	LadspaBrowser
@@ -53,14 +54,17 @@ SET(LMMS_PLUGIN_LIST
 	Nes
 	OpulenZ
 	Organic
+	Oscilloscope
 	FreeBoy
 	Patman
 	PeakControllerEffect
 	GigPlayer
+	Prestige
 	ReverbSC
 	Sf2Player
 	Sfxr
 	Sid
+	SlewDistortion
 	SlicerT
 	SpectrumAnalyzer
 	StereoEnhancer
@@ -70,6 +74,8 @@ SET(LMMS_PLUGIN_LIST
 	VstBase
 	Vestige
 	VstEffect
+	Vst3Base
+	Vst3Effect
 	Watsyn
 	WaveShaper
 	Vectorscope

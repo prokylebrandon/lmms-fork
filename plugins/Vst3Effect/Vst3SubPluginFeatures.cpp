@@ -1,0 +1,176 @@
+/*
+ * Vst3SubPluginFeatures.cpp - derivation from
+ *                             Plugin::Descriptor::SubPluginFeatures for
+ *                             hosting VST3 effect plugins
+ *
+ * Copyright (c) 2024 LMMS contributors
+ *
+ * This file is part of LMMS - https://lmms.io
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public
+ * License along with this program (see COPYING); if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+ * Boston, MA 02110-1301 USA.
+ *
+ */
+
+#include "Vst3SubPluginFeatures.h"
+
+#include <QDir>
+#include <QFileInfo>
+#include <QLabel>
+
+#include "ConfigManager.h"
+#include "Effect.h"
+#include "Vst3PluginInstance.h"
+#include "Vst3Types.h"
+
+namespace lmms
+{
+
+Vst3SubPluginFeatures::Vst3SubPluginFeatures(Plugin::Type type) :
+	SubPluginFeatures(type)
+{
+}
+
+void Vst3SubPluginFeatures::fillDescriptionWidget(QWidget* parent, const Key* key) const
+{
+	new QLabel(QWidget::tr("Name: ") + key->name, parent);
+	new QLabel(QWidget::tr("Vendor: ") + key->attributes.value("vendor"), parent);
+	new QLabel(QWidget::tr("Category: ") + key->attributes.value("category"), parent);
+	new QLabel(QWidget::tr("Bundle: ") + key->attributes.value("file"), parent);
+}
+
+void Vst3SubPluginFeatures::scanDir(const QString& dirPath, QStringList& bundlesOut) const
+{
+	QDir dir(dirPath);
+	if (!dir.exists())
+	{
+		return;
+	}
+
+	// A .vst3 bundle is normally a directory (macOS/Linux, and the common
+	// Windows layout too); some Windows-only distributions still ship a
+	// bare .vst3 file. Match both rather than assuming one shape.
+	const QStringList bundleDirs = dir.entryList(QStringList() << "*.vst3", QDir::Dirs | QDir::NoDotAndDotDot);
+	for (const QString& d : bundleDirs)
+	{
+		bundlesOut << dir.absoluteFilePath(d);
+	}
+
+	const QStringList bundleFiles = dir.entryList(QStringList() << "*.vst3", QDir::Files);
+	for (const QString& f : bundleFiles)
+	{
+		bundlesOut << dir.absoluteFilePath(f);
+	}
+
+	// Recurse into plain subdirectories that are not themselves .vst3
+	// bundles (already handled above), same intent as
+	// VstSubPluginFeatures::addPluginsFromDir()'s recursive scan minus its
+	// VST2-specific *.dll/*.so globbing.
+	const QStringList subDirs = dir.entryList(QStringList() << "*", QDir::Dirs | QDir::NoDotAndDotDot);
+	for (const QString& sub : subDirs)
+	{
+		if (sub.endsWith(".vst3", Qt::CaseInsensitive))
+		{
+			continue;
+		}
+		scanDir(dir.absoluteFilePath(sub), bundlesOut);
+	}
+}
+
+//! Folders searched for .vst3 bundles: the user's configured folder first, then
+//! the platform's standard VST3 locations. De-duplicated by real path so a
+//! configured folder that equals a standard one is not scanned twice.
+static QStringList vst3SearchDirs()
+{
+    QStringList dirs;
+    dirs << ConfigManager::inst()->vst3Dir();
+#if defined(Q_OS_WIN)
+    const QString commonFiles = qEnvironmentVariable("CommonProgramFiles");
+    if (!commonFiles.isEmpty()) { dirs << commonFiles + "/VST3"; }
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    if (!localAppData.isEmpty()) { dirs << localAppData + "/Programs/Common/VST3"; }
+#elif defined(Q_OS_MACOS)
+    dirs << QStringLiteral("/Library/Audio/Plug-Ins/VST3") << QDir::homePath() + "/Library/Audio/Plug-Ins/VST3";
+#else
+    dirs << QDir::homePath() + "/.vst3" << QStringLiteral("/usr/lib/vst3") << QStringLiteral("/usr/local/lib/vst3");
+#endif
+
+    QStringList unique;
+    for (const QString& d : dirs)
+    {
+        const QString canonical = QDir(d).canonicalPath(); // empty if the folder does not exist
+        if (!canonical.isEmpty() && !unique.contains(canonical)) { unique << canonical; }
+    }
+    return unique;
+}
+
+void Vst3SubPluginFeatures::listSubPluginKeys(const Plugin::Descriptor* desc, KeyList& kl) const
+{
+	QStringList bundles;
+	for (const QString& searchDir : vst3SearchDirs()) { scanDir(searchDir, bundles); }
+	bundles.removeDuplicates();
+
+	for (const QString& bundlePath : bundles)
+	{
+		QString error;
+		const std::vector<Vst3ClassInfo> classes = Vst3PluginInstance::discoverClasses(bundlePath, &error);
+		if (classes.empty())
+		{
+			// Unreadable bundle, or nothing usable inside it -- skip
+			// silently here, same as the VST2 scanner silently skipping
+			// non-plugin files it happens to glob. Real validation happens
+			// at load time (Vst3Effect::openPlugin), where the failure is
+			// surfaced to the user via collectErrorForUI().
+			continue;
+		}
+
+		for (const Vst3ClassInfo& info : classes)
+		{
+			// ---------------------------------------------------------
+			// Task 0 (batch 2) resolution, verified against the real
+			// Vst3Types.h: info.isInstrument / info.classIndex / info.name /
+			// info.vendor / info.category were all guessed correctly in
+			// batch 1 and needed no changes. The one mismatch was the
+			// class UID field, which is named `cid` (QString), not `uid`
+			// -- fixed below. `cid` is already a plain string identifier,
+			// so no separate encoding/decoding step is needed to store it
+			// in this AttributeMap, or (later, task 4) in the save file's
+			// `classcid` attribute. The AttributeMap key itself is kept as
+			// "uid" here -- it's an internal map key, not tied to the
+			// struct's field name -- for consistency with
+			// Vst3Effect::openPlugin, which reads this same key.
+			// ---------------------------------------------------------
+			if (info.isInstrument)
+			{
+				continue; // instrument-only classes stay on Prestige's browse-to-load path
+			}
+
+			EffectKey::AttributeMap am;
+			am["file"]     = bundlePath;
+			am["uid"]      = info.cid;                           // stable identity -- never the file path or class index alone
+			am["classidx"] = QString::number(info.classIndex);   // cached hint only; re-resolved by UID at load time (see Vst3Effect::openPlugin), never trusted positionally
+			am["vendor"]   = info.vendor;
+			am["category"] = info.category;
+
+			const QString displayName = info.name.isEmpty()
+				? QFileInfo(bundlePath).completeBaseName()
+				: info.name;
+
+			kl.push_back(Key(desc, displayName, am));
+		}
+	}
+}
+
+} // namespace lmms

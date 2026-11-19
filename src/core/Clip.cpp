@@ -31,17 +31,13 @@
 #include "Engine.h"
 #include "GuiApplication.h"
 #include "Song.h"
+#include "Track.h"
+#include "TrackContainer.h"
 
 
 namespace lmms
 {
 
-/*! \brief Create a new Clip
- *
- *  Creates a new clip for the given track.
- *
- * \param _track The track that will contain the new object
- */
 Clip::Clip( Track * track ) :
 	Model( track ),
 	m_track( track ),
@@ -61,12 +57,6 @@ Clip::Clip( Track * track ) :
 }
 
 
-/*! \brief Copy a Clip
- *
- *  Creates a duplicate clip of the one provided.
- *
- * \param other The clip object which will be copied.
- */
 Clip::Clip(const Clip& other):
 	Model(other.m_track),
 	m_track(other.m_track),
@@ -75,7 +65,6 @@ Clip::Clip(const Clip& other):
 	m_length(other.m_length),
 	m_startTimeOffset(other.m_startTimeOffset),
 	m_mutedModel(other.m_mutedModel.value(), this, tr( "Mute" )),
-	m_resizable(other.m_resizable),
 	m_autoResize(other.m_autoResize),
 	m_selectViewOnCreate{other.m_selectViewOnCreate},
 	m_color(other.m_color)
@@ -86,11 +75,7 @@ Clip::Clip(const Clip& other):
 	}
 }
 
-/*! \brief Destroy a Clip
- *
- *  Destroys the given clip.
- *
- */
+
 Clip::~Clip()
 {
 	emit destroyedClip();
@@ -102,15 +87,6 @@ Clip::~Clip()
 }
 
 
-
-
-/*! \brief Move this Clip's position in time
- *
- *  If the clip has moved, update its position.  We
- *  also add a journal entry for undo and update the display.
- *
- * \param _pos The new position of the clip.
- */
 void Clip::movePosition( const TimePos & pos )
 {
 	TimePos newPos = std::max(0, pos.getTicks());
@@ -125,23 +101,14 @@ void Clip::movePosition( const TimePos & pos )
 }
 
 
-
-
-/*! \brief Change the length of this Clip
- *
- *  If the clip's length has changed, update it.  We
- *  also add a journal entry for undo and update the display.
- *
- * \param _length The new length of the clip.
- */
 void Clip::changeLength( const TimePos & length )
 {
+	if (m_length == length) { return; }
+
 	m_length = length;
 	Engine::getSong()->updateLength();
 	emit lengthChanged();
 }
-
-
 
 
 bool Clip::comparePosition(const Clip *a, const Clip *b)
@@ -150,12 +117,6 @@ bool Clip::comparePosition(const Clip *a, const Clip *b)
 }
 
 
-
-
-/*! \brief Copies the state of a Clip to another Clip
- *
- *  This method copies the state of a Clip to another Clip
- */
 void Clip::copyStateTo( Clip *src, Clip *dst )
 {
 	// If the node names match we copy the state
@@ -173,17 +134,23 @@ void Clip::copyStateTo( Clip *src, Clip *dst )
 	}
 }
 
+bool Clip::hasTrackContainer() const
+{
+	return getTrack() != nullptr && getTrack()->trackContainer() != nullptr;
+}
+
+bool Clip::isInPattern() const
+{
+	return hasTrackContainer()
+		&& getTrack()->trackContainer()->type() == TrackContainer::Type::Pattern;
+}
+
+bool Clip::manuallyResizable() const
+{
+	return !isInPattern();
+}
 
 
-
-/*! \brief Mutes this Clip
- *
- *  Restore the previous state of this clip. This will
- *  restore the position or the length of the clip
- *  depending on what was changed.
- *
- * \param _je The journal entry to undo
- */
 void Clip::toggleMute()
 {
 	m_mutedModel.setValue( !m_mutedModel.value() );
@@ -191,14 +158,10 @@ void Clip::toggleMute()
 }
 
 
-
-
 TimePos Clip::startTimeOffset() const
 {
 	return m_startTimeOffset;
 }
-
-
 
 
 void Clip::setStartTimeOffset( const TimePos &startTimeOffset )

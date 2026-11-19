@@ -26,19 +26,17 @@
 #define LMMS_GUI_SAMPLE_TRACK_VIEW_H
 
 
-#include "MixerChannelLcdSpinBox.h"
+#include "SampleTrack.h"
 #include "TrackView.h"
 
 namespace lmms
 {
 
-class SampleTrack;
-
-
 namespace gui
 {
 
 class Knob;
+class MixerChannelLcdSpinBox;
 class SampleTrackWindow;
 class TrackLabelButton;
 
@@ -85,8 +83,12 @@ protected:
 	void dropEvent(QDropEvent *de) override;
 
 private slots:
-	void assignMixerLine( int channelIndex );
+	//! @brief Assign a specific mixer Channel for this track.
+	void assignMixerLine(int channelIndex);
+
+	//! @brief Create and assign a new mixer Channel for this track.
 	void createMixerLine();
+	void corruptStateUpdate();
 
 
 private:

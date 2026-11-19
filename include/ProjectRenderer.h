@@ -59,17 +59,18 @@ public:
 		AudioFileDeviceInstantiaton m_getDevInst;
 	} ;
 
-
-	ProjectRenderer( const AudioEngine::qualitySettings & _qs,
-				const OutputSettings & _os,
-				ExportFileFormat _file_format,
-				const QString & _out_file );
+	ProjectRenderer(const OutputSettings& _os, ExportFileFormat _file_format, const QString& _out_file);
 	~ProjectRenderer() override = default;
 
 	bool isReady() const
 	{
 		return m_fileDev != nullptr;
 	}
+
+	//! True if writing to the output file failed while rendering.
+	bool hasWriteError() const { return m_fileDev != nullptr && m_fileDev->hasWriteError(); }
+
+	QString outputFile() const { return m_fileDev != nullptr ? m_fileDev->outputFile() : QString{}; }
 
 	static ExportFileFormat getFileFormatFromExtension(
 							const QString & _ext );
@@ -93,7 +94,6 @@ private:
 	void run() override;
 
 	AudioFileDevice * m_fileDev;
-	AudioEngine::qualitySettings m_qualitySettings;
 
 	volatile int m_progress;
 	volatile bool m_abort;

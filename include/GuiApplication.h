@@ -26,18 +26,19 @@
 #define LMMS_GUI_GUI_APPLICATION_H
 
 #include <QObject>
-#include <QSocketNotifier>
 
 #include "lmms_export.h"
 #include "lmmsconfig.h"
 
 class QLabel;
+class QSocketNotifier;
 
 namespace lmms::gui
 {
 
 class AutomationEditorWindow;
 class ControllerRackView;
+class DiscordPresence;
 class MixerView;
 class MainWindow;
 class MicrotunerConfig;
@@ -54,9 +55,18 @@ public:
 	~GuiApplication() override;
 
 	static GuiApplication* instance();
+
+	//! @brief Called from main when SIGINT is fired
+	//!
+	//! Unix signal handlers can only call async-signal-safe functions:
+	//! `write(fd)` -> `QSocketNotifier` -> `SLOT sigintOccurred()`
+	//!
+	//! @see https://doc.qt.io/qt-6/unix-signals.html
 	static void sigintHandler(int);
+
 	static bool isWayland();
 #ifdef LMMS_BUILD_WIN32
+	//! @brief Returns the Windows System font.
 	static QFont getWin32SystemFont();
 #endif
 
@@ -71,6 +81,7 @@ public:
 	MicrotunerConfig* getMicrotunerConfig() { return m_microtunerConfig; }
 	AutomationEditorWindow* automationEditor() { return m_automationEditor; }
 	ControllerRackView* getControllerRackView() { return m_controllerRackView; }
+	DiscordPresence* discordPresence() { return m_discordPresence; }
 
 	//! File descriptors for unix socketpair, used to receive SIGINT
 	static inline int s_sigintFd[2];
@@ -96,6 +107,7 @@ private:
 	ControllerRackView* m_controllerRackView;
 	QLabel* m_loadingProgressLabel;
 	QSocketNotifier* m_sigintNotifier;
+	DiscordPresence* m_discordPresence = nullptr;
 };
 
 // Short-hand function

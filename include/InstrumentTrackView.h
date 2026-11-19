@@ -25,7 +25,6 @@
 #ifndef LMMS_GUI_INSTRUMENT_TRACK_VIEW_H
 #define LMMS_GUI_INSTRUMENT_TRACK_VIEW_H
 
-#include "MixerChannelLcdSpinBox.h"
 #include "TrackView.h"
 
 #include "InstrumentTrack.h"
@@ -38,6 +37,7 @@ namespace lmms::gui
 class InstrumentTrackWindow;
 class Knob;
 class MidiCCRackView;
+class MixerChannelLcdSpinBox;
 class TrackContainerView;
 class TrackLabelButton;
 
@@ -79,6 +79,7 @@ protected:
 
 
 private slots:
+	void onInstrumentChanged();
 	void toggleInstrumentWindow( bool _on );
 	void toggleMidiCCRack();
 	void activityIndicatorPressed();
@@ -88,10 +89,15 @@ private slots:
 	void midiOutSelected();
 	void midiConfigChanged();
 
-	void assignMixerLine( int channelIndex );
+	//! @brief Assign a specific mixer Channel for this track
+	void assignMixerLine(int channelIndex);
+
+	//! @brief Create and assign a new mixer Channel for this track
 	void createMixerLine();
 
 	void handleConfigChange(QString cls, QString attr, QString value);
+	
+	void corruptStateUpdate();
 
 private:
 	static QPixmap determinePixmap(InstrumentTrack* instrumentTrack);

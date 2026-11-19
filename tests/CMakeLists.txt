@@ -5,12 +5,18 @@ set(CMAKE_AUTOMOC ON)
 
 set(LMMS_TESTS
 	src/core/ArrayVectorTest.cpp
+	src/core/AudioBufferTest.cpp
 	src/core/AutomatableModelTest.cpp
 	src/core/MathTest.cpp
 	src/core/ProjectVersionTest.cpp
 	src/core/RelativePathsTest.cpp
+	src/core/TimelineTest.cpp
 	src/tracks/AutomationTrackTest.cpp
 )
+
+if(LMMS_HAVE_VST3)
+	list(APPEND LMMS_TESTS src/plugins/Vst3BaseTest.cpp)
+endif()
 
 foreach(LMMS_TEST_SRC IN LISTS LMMS_TESTS)
 	# TODO CMake 3.20: Use cmake_path
@@ -29,4 +35,24 @@ foreach(LMMS_TEST_SRC IN LISTS LMMS_TESTS)
 	)
 
 	target_compile_features(${LMMS_TEST_NAME} PRIVATE cxx_std_20)
+	target_compile_definitions(${LMMS_TEST_NAME} PRIVATE LMMS_TESTING)
 endforeach()
+
+if(LMMS_HAVE_VST3)
+	target_compile_definitions(Vst3BaseTest PRIVATE LMMS_HAVE_VST3)
+	target_link_libraries(Vst3BaseTest PRIVATE vst3base)
+	target_include_directories(Vst3BaseTest PRIVATE
+		"${CMAKE_SOURCE_DIR}/plugins/Vst3Base"
+		"${CMAKE_SOURCE_DIR}/plugins/Vst3Base/vst3sdk")
+
+if(WIN32)
+    set_tests_properties(Vst3BaseTest PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:vst3base>;PATH=path_list_prepend:$<TARGET_FILE_DIR:lmms>")
+elseif(APPLE)
+    set_tests_properties(Vst3BaseTest PROPERTIES
+        ENVIRONMENT "DYLD_LIBRARY_PATH=$<TARGET_FILE_DIR:vst3base>:$ENV{DYLD_LIBRARY_PATH}")
+else()
+    set_tests_properties(Vst3BaseTest PROPERTIES
+        ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:vst3base>:$ENV{LD_LIBRARY_PATH}")
+endif()
+endif()
