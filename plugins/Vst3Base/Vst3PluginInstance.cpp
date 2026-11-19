@@ -1037,6 +1037,20 @@ void Vst3PluginInstance::buildMidiMapping()
 
     auto* ctrl = cast<Steinberg::Vst::IEditController>(m_controller);
     auto* mapping = Steinberg::FUnknownPtr<Steinberg::Vst::IMidiMapping>(ctrl).getInterface();
+    {
+        auto* nec = Steinberg::FUnknownPtr<Steinberg::Vst::INoteExpressionController>(ctrl).getInterface();
+        int diagTypes = -1; bool diagTuning = false;
+        if (nec)
+        {
+            diagTypes = nec->getNoteExpressionCount(0, 0);
+            for (int i = 0; i < diagTypes; ++i)
+            {
+                Steinberg::Vst::NoteExpressionTypeInfo info{};
+                if (nec->getNoteExpressionInfo(0, 0, i, info) == Steinberg::kResultOk && info.typeId == Steinberg::Vst::kTuningTypeID) { diagTuning = true; }
+            }
+        }
+        qWarning("Vst3PluginInstance: %s note expression: INoteExpressionController=%d, types=%d, tuning=%d, IMidiMapping=%d", qPrintable(m_name), nec ? 1 : 0, diagTypes, diagTuning ? 1 : 0, mapping ? 1 : 0);
+    }
     if (!mapping) { return; }
 
     const auto none = static_cast<Vst3ParamID>(Steinberg::Vst::kNoParamId);
@@ -1073,6 +1087,11 @@ void Vst3PluginInstance::buildMidiMapping()
         }
     }
     if (anyBend) { m_pitchBendMap = std::move(bendTable); }
+    {
+        int diagBendChannels = 0;
+        for (const auto bendId : m_pitchBendMap) { if (bendId != none) { ++diagBendChannels; } }
+        qWarning("Vst3PluginInstance: %s IMidiMapping: pitch bend mapped on %d channel(s), CC table %s", qPrintable(m_name), diagBendChannels, m_midiMap.empty() ? "empty" : "present");
+    }
 }
 
 bool Vst3PluginInstance::mapMidiToParameter(const MidiEvent& event, Vst3ParamID& id, double& value) const

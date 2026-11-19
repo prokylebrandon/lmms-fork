@@ -189,8 +189,8 @@ public:
         m_events.push_back(e);
     }
 
-    /// Sample offset of the most recently added event, or 0 when the list is empty.
-    Steinberg::int32 lastSampleOffset() const { return m_events.empty() ? 0 : m_events.back().sampleOffset; }
+    /// Largest sample offset of any event added so far, or 0 when the list is empty (events are not kept sorted, so the last one added is not necessarily the latest).
+    Steinberg::int32 lastSampleOffset() const { Steinberg::int32 latest = 0; for (const auto& ev : m_events) { latest = std::max(latest, ev.sampleOffset); } return latest; }
 
     // ------------------------------------------------------------------
     // IEventList
