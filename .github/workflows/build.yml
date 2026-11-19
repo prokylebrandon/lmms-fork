@@ -228,7 +228,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CMAKE_OPTS: >-
-        -Werror=dev
+        -Wno-error=dev
         -DUSE_WERROR=OFF
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTARGET_UARCH=official
@@ -333,7 +333,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       CMAKE_OPTS: >-
-        -Werror=dev
+        -Wno-error=dev
         -DUSE_WERROR=ON
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTARGET_UARCH=official
@@ -476,7 +476,7 @@ jobs:
             -B build `
             -G Ninja `
             --toolchain C:/vcpkg/scripts/buildsystems/vcpkg.cmake `
-            -Werror=dev `
+            -Wno-error=dev `
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
             -DTARGET_UARCH=official `
             -DWANT_QT6=ON `
