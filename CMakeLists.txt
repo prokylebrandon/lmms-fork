@@ -79,7 +79,6 @@ INCLUDE(DetectMachine)
 OPTION(WANT_ALSA	"Include ALSA (Advanced Linux Sound Architecture) support" ON)
 OPTION(WANT_CALF	"Include CALF LADSPA plugins" ON)
 OPTION(WANT_CAPS	"Include C* Audio Plugin Suite (LADSPA plugins)" ON)
-OPTION(WANT_CARLA	"Include Carla plugin" ON)
 OPTION(WANT_CMT		"Include Computer Music Toolkit LADSPA plugins" ON)
 OPTION(WANT_JACK	"Include JACK (Jack Audio Connection Kit) support" ON)
 OPTION(WANT_WEAKJACK	"Loosely link JACK libraries" ON)
@@ -430,21 +429,6 @@ ELSE(WANT_TAP)
 ENDIF(WANT_TAP)
 
 
-# check for CARLA
-IF(WANT_CARLA)
-	PKG_CHECK_MODULES(CARLA carla-native-plugin)
-	# look for carla under old name
-	IF(NOT CARLA_FOUND)
-		PKG_CHECK_MODULES(CARLA carla-standalone>=1.9.5)
-	ENDIF()
-	IF(CARLA_FOUND)
-		SET(LMMS_HAVE_CARLA TRUE)
-		SET(STATUS_CARLA "OK")
-	ELSE(CARLA_FOUND)
-		SET(LMMS_HAVE_WEAKCARLA TRUE)
-		SET(STATUS_CARLA "OK (weak linking enabled)")
-	ENDIF(CARLA_FOUND)
-ENDIF(WANT_CARLA)
 
 
 # check for SDL2
@@ -934,7 +918,6 @@ MESSAGE(
 "* Lv2 plugins                 : ${STATUS_LV2}\n"
 "* SUIL for plugin UIs         : ${STATUS_SUIL}\n"
 "* ZynAddSubFX instrument      : ${STATUS_ZYN}\n"
-"* Carla Patchbay & Rack       : ${STATUS_CARLA}\n"
 "* SoundFont2 player           : ${STATUS_FLUIDSYNTH}\n"
 "* Sid instrument              : ${STATUS_SID}\n"
 "* Stk Mallets                 : ${STATUS_STK}\n"

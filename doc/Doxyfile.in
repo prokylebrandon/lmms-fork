@@ -32,7 +32,6 @@ FILE_PATTERNS          = *.c \
                          *.hpp
 RECURSIVE              = YES
 EXCLUDE                = @CMAKE_SOURCE_DIR@/../src/3rdparty \
-                         @CMAKE_SOURCE_DIR@/../plugins/CarlaBase/carla \
                          @CMAKE_SOURCE_DIR@/../plugins/FreeBoy/game-music-emu \
                          @CMAKE_SOURCE_DIR@/../plugins/LadspaEffect/calf/veal \
                          @CMAKE_SOURCE_DIR@/../plugins/LadspaEffect/caps \

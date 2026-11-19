@@ -27,9 +27,6 @@ SET(LMMS_PLUGIN_LIST
 	BassBooster
 	BitInvader
 	Bitcrush
-	CarlaBase
-	CarlaPatchbay
-	CarlaRack
 	Compressor
 	CrossoverEQ
 	Delay

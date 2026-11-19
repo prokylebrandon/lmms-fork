@@ -64,8 +64,6 @@ known_no_namespace_lmms = {
     # nothing to set under a namespace
     'include/debug.h',
     'include/versioninfo.h',
-    'plugins/CarlaBase/CarlaConfig/config.h',
-    'plugins/CarlaBase/DummyCarla.cpp',
     # only defines Steinberg::IPlugFrame::iid, which must live in namespace Steinberg
     'plugins/Vst3Base/Vst3PlugFrameIid.cpp',
     # unclear why it has no namespace

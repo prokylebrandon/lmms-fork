@@ -1,4 +1,3 @@
-brew "carla"
 brew "ccache"
 brew "fftw"
 brew "fltk"

@@ -35,9 +35,6 @@
 [submodule "src/3rdparty/ringbuffer"]
 	path = src/3rdparty/ringbuffer
 	url = https://github.com/JohannesLorenz/ringbuffer.git
-[submodule "plugins/CarlaBase/carla"]
-	path = plugins/CarlaBase/carla
-	url = https://github.com/falktx/carla
 [submodule "plugins/Sid/resid/resid"]
 	path = plugins/Sid/resid/resid
 	url = https://github.com/libsidplayfp/resid
