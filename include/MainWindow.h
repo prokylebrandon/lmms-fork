@@ -71,6 +71,9 @@ public:
 
 	void refocus();
 
+	//! Gives keyboard focus to the song editor, so shortcuts such as Space work.
+	void focusSongEditor();
+
 	///
 	/// \brief	Asks whether changes made to the project are to be saved.
 	///

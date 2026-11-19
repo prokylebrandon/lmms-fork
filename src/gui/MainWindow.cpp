@@ -994,6 +994,26 @@ void MainWindow::refocus()
 
 
 
+void MainWindow::focusSongEditor()
+{
+	const auto songEditor = getGUI()->songEditor();
+	if (!songEditor || !songEditor->isVisible())
+	{
+		// Nothing to focus. Still take focus away from whatever widget had it (e.g. the sidebar).
+		setFocus(Qt::MouseFocusReason);
+		return;
+	}
+
+	// A detached song editor is a separate top-level window, which must be the active window to receive key presses.
+	const auto subWindow = qobject_cast<SubWindow*>(songEditor->parentWidget());
+	if (subWindow && subWindow->isDetached()) { songEditor->activateWindow(); }
+
+	songEditor->m_editor->setFocus(Qt::MouseFocusReason);
+}
+
+
+
+
 void MainWindow::togglePatternEditorWin( bool forceShow )
 {
 	toggleWindow( getGUI()->patternEditor(), forceShow );
@@ -1326,10 +1346,13 @@ void MainWindow::keyPressEvent( QKeyEvent * _ke )
 		case Qt::Key_Alt: m_keyMods.m_alt = true; break;
 		case Qt::Key_Space:
 		{
-			if (Editor::lastPlayedEditor() != nullptr)
+			// Fall back on the song editor if nothing has been played from an editor yet
+			Editor* editor = Editor::lastPlayedEditor();
+			if (!editor) { editor = getGUI()->songEditor(); }
+			if (editor)
 			{
-				if (m_keyMods.m_shift) { Editor::lastPlayedEditor()->togglePause(); }
-				else { Editor::lastPlayedEditor()->togglePlayStop(); }
+				if (m_keyMods.m_shift) { editor->togglePause(); }
+				else { editor->togglePlayStop(); }
 			}
 			break;
 		}
@@ -1655,6 +1678,9 @@ void MainWindow::MovableQMdiArea::mousePressEvent(QMouseEvent* event)
 	m_lastY = pos.y();
 	m_isBeingMoved = true;
 	setCursor(Qt::ClosedHandCursor);
+
+	// Clicking the empty workspace should not leave keyboard focus on e.g. the sidebar
+	getGUI()->mainWindow()->focusSongEditor();
 }
 
 void MainWindow::MovableQMdiArea::mouseMoveEvent(QMouseEvent* event)
