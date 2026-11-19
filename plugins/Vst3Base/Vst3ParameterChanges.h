@@ -104,7 +104,7 @@ private:
 class Vst3ParameterChanges final : public Steinberg::Vst::IParameterChanges
 {
 public:
-    static constexpr int kMaxChanges = 128;
+    static constexpr int kMaxChanges = 4096; // >= 2 x kQueueCapacity (queued changes + MIDI-mapped CC); 128 silently dropped changes
 
     Vst3ParameterChanges() { m_queues.reserve(kMaxChanges); m_queuePtrs.reserve(kMaxChanges); }
 

@@ -672,6 +672,7 @@ void PrestigeInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 			stateNode.appendChild(doc.createTextNode(QString::fromLatin1(state.toBase64())));
 		}
 		parent.appendChild(stateNode);
+		qWarning("PRESTIGE: saved state, format=%s, text length=%d chars", qPrintable(stateNode.attribute("format")), static_cast<int>(stateNode.text().size()));
 
 		// --- piece 4: host-side parameter/automation state ------------------
 		// Separate from the plugin's own state blob above. The plugin's state
@@ -728,6 +729,7 @@ void PrestigeInstrument::applySavedElement(const QDomElement& element)
 		// predates this attribute existing at all) is the plain single
 		// text-node blob restoreState() has always expected.
 		const QString format = stateNode.attribute("format", "combined");
+		qWarning("PRESTIGE: restoring state, format=%s, text length=%d chars", qPrintable(format), static_cast<int>(stateNode.text().size()));
 		bool restored = true;
 		bool anyState = false;
 
@@ -797,6 +799,7 @@ void PrestigeInstrument::applySavedElement(const QDomElement& element)
 	// a parameter is recorded at all. Matched by id, not by position: a
 	// plugin update between save and load can reorder or drop parameters.
 	const QDomElement paramsNode = element.firstChildElement("parameters");
+	int diagBlobWon = 0, diagSavedApplied = 0;
 	if (!paramsNode.isNull())
 	{
 		for (auto paramElement = paramsNode.firstChildElement("param"); !paramElement.isNull();
@@ -813,6 +816,7 @@ void PrestigeInstrument::applySavedElement(const QDomElement& element)
 				const auto after = m_plugin->getParameterNormalized(id);
 				const bool blobSetIt = stateRestoredOk && before != preRestoreValues.end() && after
 					&& std::fabs(*after - before->second) > 1e-6;
+				if (blobSetIt) { ++diagBlobWon; } else { ++diagSavedApplied; }
 				model->loadSettings(paramElement, !blobSetIt);
 					break;
 				}
@@ -820,6 +824,7 @@ void PrestigeInstrument::applySavedElement(const QDomElement& element)
 		}
 	}
 
+	qWarning("PRESTIGE: restore summary: stateRestoredOk=%d, blob kept %d parameters, saved value applied to %d parameters", stateRestoredOk ? 1 : 0, diagBlobWon, diagSavedApplied);
 	// UI state. Only recorded here; the view acts on it when it receives
 	// uiRestoreRequested().
 	const QDomElement uiNode = element.firstChildElement("ui");
