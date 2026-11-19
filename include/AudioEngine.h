@@ -25,6 +25,7 @@
 #ifndef LMMS_AUDIO_ENGINE_H
 #define LMMS_AUDIO_ENGINE_H
 
+#include <algorithm>
 #include <mutex>
 
 #include <QThread>
@@ -212,17 +213,9 @@ public:
 	}
 
 
-	static inline sample_t clip(const sample_t s)
+	static constexpr sample_t clip(const sample_t s)
 	{
-		if (s > 1.0f)
-		{
-			return 1.0f;
-		}
-		else if (s < -1.0f)
-		{
-			return -1.0f;
-		}
-		return s;
+		return std::clamp<sample_t>(s, -1.0f, 1.0f);
 	}
 
 

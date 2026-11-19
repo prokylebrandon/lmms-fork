@@ -31,7 +31,6 @@
 #include <QFormLayout>
 #include <QLineEdit>
 
-#include "endian_handling.h"
 #include "LcdSpinBox.h"
 #include "AudioEngine.h"
 
@@ -140,7 +139,7 @@ void AudioSndio::run()
 		audioEngine()->renderNextBuffer({fbuf.data(), channels(), framesPerAudioBuffer});
 
 		// Sndio doesn't speak float, so convert samples to signed int.
-		// While convertToS16() exists, it is intentionally not used
+		// While toInt16leInterleaved() exists, it is intentionally not used
 		// here. There is no need to convert endian-ness since sndio was
 		// initialized with SIO_LE_NATIVE, and there's no reason to
 		// also convert to SampleFrame.

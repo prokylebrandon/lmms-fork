@@ -72,10 +72,14 @@ public:
 	bool isRunning() const { return m_running.test(std::memory_order_acquire); }
 
 protected:
-	// convert a given audio-buffer to a buffer in signed 16-bit samples
-	// returns num of bytes in outbuf
-	int convertToS16(const SampleFrame* _ab, const f_cnt_t _frames, int_sample_t* _output_buffer,
-		const bool _convert_endian = false);
+	//! Converts audio to interleaved signed 16-bit PCM, always little-endian regardless of host byte order.
+	//! Samples are clipped to [-1, 1]. Only mono and stereo devices are supported: a mono device
+	//! receives the average of the left and right channels.
+	//! @param src    the audio to convert
+	//! @param frames the number of frames in @p src
+	//! @param dst    receives the converted samples, must hold frames * channels() samples
+	//! @return the number of bytes written to @p dst
+	int toInt16leInterleaved(const SampleFrame* src, f_cnt_t frames, int_sample_t* dst) const;
 
 	// clear given signed-int-16-buffer
 	void clearS16Buffer(int_sample_t* _outbuf, const f_cnt_t _frames);
