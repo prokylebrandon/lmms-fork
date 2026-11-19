@@ -601,7 +601,8 @@ void MidiClip::addSteps()
 
 void MidiClip::cloneSteps()
 {
-	if (!canIncreaseLength())
+	// cloning doubles the pattern, so check the doubled length
+	if (m_steps * 2 > MAX_PATTERN_LENGTH_IN_BARS * TimePos::stepsPerBar())
 	{
 		displayLengthError();
 		return;
@@ -612,18 +613,23 @@ void MidiClip::cloneSteps()
 
 	const TimePos endPosition = TimePos::stepPosition(oldLength);
 
-	// Must reserve so that we don't accidentally grow the vector.
-	m_notes.reserve(m_notes.size() * 2);
+	// Index-based loop below: push_back may reallocate, so no iterators are held.
+	const auto oldCount = m_notes.size();
 
 	instrumentTrack()->lock();
 
-	for (auto& note: m_notes)  {
+	for (std::size_t i = 0; i < oldCount; ++i)
+	{
+		Note* note = m_notes[i];
 		if (note->pos() >= endPosition) { continue; }
 		auto newNote = note->clone();
 
 		newNote->setPos(endPosition + note->pos());
 		m_notes.push_back(newNote);
 	}
+
+	// keep notes sorted like addNote() does (originals past the pattern end may sort after clones)
+	std::stable_sort(m_notes.begin(), m_notes.end(), Note::lessThan);
 
 	instrumentTrack()->unlock();
 
