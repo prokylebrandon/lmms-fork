@@ -103,6 +103,15 @@ Release playUntilRelease(lmms::NotePlayHandle* nph, const std::vector<TempoChang
 	return {-1.0, -1.0};
 }
 
+//! Pauses the audio device thread while alive. The render-only device renders periods on its own thread, which would advance a playing song between the test's own renderNextPeriod() calls.
+struct ProcessingPause
+{
+	ProcessingPause() { lmms::Engine::audioEngine()->stopProcessing(); }
+	~ProcessingPause() { lmms::Engine::audioEngine()->startProcessing(); }
+	ProcessingPause(const ProcessingPause&) = delete;
+	ProcessingPause& operator=(const ProcessingPause&) = delete;
+};
+
 QString describe(const Release& release, double expected)
 {
 	return QString("released at frame %1, expected %2").arg(release.frame).arg(expected);
@@ -239,6 +248,8 @@ private slots:
 	void timelineFollowsTempoAutomation()
 	{
 		using namespace lmms;
+		// No audio device thread may render periods of its own while the song is being stepped here
+		const ProcessingPause pause;
 		auto song = Engine::getSong();
 		auto audioEngine = Engine::audioEngine();
 		auto& timeline = song->getTimeline(Song::PlayMode::Song);
