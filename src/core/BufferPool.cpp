@@ -1,6 +1,7 @@
 /*
- * BufferManager.h - A buffer caching/memory management system
+ * BufferPool.cpp
  *
+ * Copyright (c) 2018 Lukas W <lukaswhl/at/gmail.com>
  * Copyright (c) 2014 Vesa Kivimäki <contact/dot/diizy/at/nbl/dot/fi>
  * Copyright (c) 2006-2014 Tobias Doerffel <tobydox/at/users.sourceforge.net>
  *
@@ -23,29 +24,32 @@
  *
  */
 
-#ifndef LMMS_BUFFER_MANAGER_H
-#define LMMS_BUFFER_MANAGER_H
+#include "BufferPool.h"
 
-#include "lmms_export.h"
-#include "LmmsTypes.h"
+#include "SampleFrame.h"
+
+#include <cstring>
+#include "MemoryPool.h"
 
 namespace lmms
 {
 
-class SampleFrame;
+static std::unique_ptr<_MemoryPool_Base> pool;
+const int BM_INITIAL_BUFFERS = 256;
 
-class LMMS_EXPORT BufferManager
+void BufferPool::init( fpp_t framesPerPeriod )
 {
-public:
-	static void init( f_cnt_t fpp );
-	static SampleFrame* acquire();
-	static void release( SampleFrame* buf );
+	pool.reset(new _MemoryPool_Base(framesPerPeriod * sizeof(SampleFrame), BM_INITIAL_BUFFERS));
+}
 
-private:
-	static f_cnt_t s_framesPerPeriod;
-};
+SampleFrame * BufferPool::acquire()
+{
+	return reinterpret_cast<SampleFrame*>(pool->allocate());
+}
 
+void BufferPool::release( SampleFrame * buf )
+{
+	pool->deallocate(buf);
+}
 
 } // namespace lmms
-
-#endif // LMMS_BUFFER_MANAGER_H

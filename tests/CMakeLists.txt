@@ -12,6 +12,7 @@ set(LMMS_TESTS
 	src/core/RelativePathsTest.cpp
 	src/core/TimelineTest.cpp
 	src/core/TempoAutomationTest.cpp
+	src/core/MemoryPoolTest.cpp
 	src/tracks/AutomationTrackTest.cpp
 )
 

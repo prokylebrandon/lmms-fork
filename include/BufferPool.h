@@ -1,7 +1,6 @@
 /*
- * BufferManager.cpp - A buffer caching/memory management system
+ * BufferPool.h
  *
- * Copyright (c) 2017 Lukas W <lukaswhl/at/gmail.com>
  * Copyright (c) 2014 Vesa Kivimäki <contact/dot/diizy/at/nbl/dot/fi>
  * Copyright (c) 2006-2014 Tobias Doerffel <tobydox/at/users.sourceforge.net>
  *
@@ -24,32 +23,27 @@
  *
  */
 
-#include "BufferManager.h"
+#pragma once
 
-#include "SampleFrame.h"
-
+#include "lmms_export.h"
+#include "LmmsTypes.h"
 
 namespace lmms
 {
 
-f_cnt_t BufferManager::s_framesPerPeriod;
+class SampleFrame;
 
-void BufferManager::init( f_cnt_t fpp )
+/// Legacy interface for buffer re-use. Uses MemoryPool internally now.
+class LMMS_EXPORT BufferPool
 {
-	s_framesPerPeriod = fpp;
-}
+public:
+	static void init( f_cnt_t fpp );
+	static SampleFrame* acquire();
+	static void release( SampleFrame* buf );
 
+private:
+	static f_cnt_t s_framesPerPeriod;
+};
 
-SampleFrame* BufferManager::acquire()
-{
-	return new SampleFrame[s_framesPerPeriod];
-}
-
-
-
-void BufferManager::release( SampleFrame* buf )
-{
-	delete[] buf;
-}
 
 } // namespace lmms

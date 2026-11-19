@@ -79,7 +79,7 @@ lmms::NotePlayHandle* createNote(lmms::InstrumentTrack& track, int ticks, int te
 	using namespace lmms;
 	Engine::getSong()->setTempo(tempo);
 	const auto frames = static_cast<f_cnt_t>(std::lround(ticks * framesPerTick(tempo)));
-	return NotePlayHandleManager::acquire(&track, offset, frames, Note(TimePos(ticks), TimePos(0), DefaultKey));
+	return NotePlayHandlePool.construct(&track, offset, frames, Note(TimePos(ticks), TimePos(0), DefaultKey));
 }
 
 //! Plays the note one period at a time like the audio engine does, applying every tempo change at its exact frame
@@ -137,7 +137,7 @@ private slots:
 		const auto changeFrame = static_cast<double>(nph->frames());
 
 		const auto release = playUntilRelease(nph, {{changeFrame, 54}});
-		NotePlayHandleManager::release(nph);
+		NotePlayHandlePool.destroy(nph);
 
 		QVERIFY2(std::abs(release.frame - changeFrame) <= 1.0, qPrintable(describe(release, changeFrame)));
 		const auto periodFrames = static_cast<double>(Engine::audioEngine()->framesPerPeriod());
@@ -155,7 +155,7 @@ private slots:
 		const std::vector<TempoChange> changes{{0.5 * sampleRate + 37, 120}};
 
 		const auto release = playUntilRelease(nph, changes);
-		NotePlayHandleManager::release(nph);
+		NotePlayHandlePool.destroy(nph);
 
 		const auto expected = expectedEndFrame(96, 60, changes);
 		QVERIFY2(std::abs(release.frame - expected) <= 1.0, qPrintable(describe(release, expected)));
@@ -181,7 +181,7 @@ private slots:
 			InstrumentTrack track(Engine::getSong());
 			auto nph = createNote(track, 384, startTempo);
 			const auto release = playUntilRelease(nph, changes);
-			NotePlayHandleManager::release(nph);
+			NotePlayHandlePool.destroy(nph);
 
 			const auto expected = expectedEndFrame(384, startTempo, changes);
 			QVERIFY2(std::abs(release.frame - expected) <= 2.0, qPrintable(describe(release, expected)));
@@ -204,7 +204,7 @@ private slots:
 		auto expected = 50.0 + (total - 50.0) * 2.0;
 		QVERIFY2(std::abs(static_cast<double>(nph->frames()) - expected) <= 1.0,
 			qPrintable(QString("frames %1, expected %2").arg(nph->frames()).arg(expected)));
-		NotePlayHandleManager::release(nph);
+		NotePlayHandlePool.destroy(nph);
 
 		// A change before the note starts converts the whole note.
 		nph = createNote(track, 48, 120, 100);
@@ -213,7 +213,7 @@ private slots:
 		expected = total * 2.0;
 		QVERIFY2(std::abs(static_cast<double>(nph->frames()) - expected) <= 1.0,
 			qPrintable(QString("frames %1, expected %2").arg(nph->frames()).arg(expected)));
-		NotePlayHandleManager::release(nph);
+		NotePlayHandlePool.destroy(nph);
 	}
 
 	// Song::setTempo() runs on every automation write, also when the tempo did not change, and often for tiny
@@ -231,7 +231,7 @@ private slots:
 		nph->resize(120, 0);
 		nph->resize(60, 0);
 		QVERIFY(std::abs(static_cast<double>(nph->frames()) - static_cast<double>(frames)) <= 1.0);
-		NotePlayHandleManager::release(nph);
+		NotePlayHandlePool.destroy(nph);
 	}
 
 	// Tempo automation in the middle of a period: the tick that starts at the change has to last as long as the new

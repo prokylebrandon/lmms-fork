@@ -346,9 +346,6 @@ int main( int argc, char * * argv )
 	}
 #endif
 
-	// initialize memory managers
-	NotePlayHandleManager::init();
-
 	// initialize RNG
 	srand( getpid() + time( 0 ) );
 
@@ -942,9 +939,6 @@ int main( int argc, char * * argv )
 		FreeConsole();
 	}
 #endif
-
-
-	NotePlayHandleManager::free();
 
 	return ret;
 }

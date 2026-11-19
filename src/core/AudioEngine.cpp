@@ -36,6 +36,7 @@
 #include "EnvelopeAndLfoParameters.h"
 #include "NotePlayHandle.h"
 #include "ConfigManager.h"
+#include "BufferPool.h"
 
 // platform-specific audio-interface-classes
 #include "AudioAlsa.h"
@@ -54,8 +55,6 @@
 #include "MidiWinMM.h"
 #include "MidiApple.h"
 #include "MidiDummy.h"
-
-#include "BufferManager.h"
 
 namespace lmms
 {
@@ -97,7 +96,7 @@ AudioEngine::AudioEngine(bool renderOnly)
 		zeroSampleFrames(m_inputBuffer[i], m_inputBufferSize[i]);
 	}
 
-	BufferManager::init( m_framesPerPeriod );
+	BufferPool::init( m_framesPerPeriod );
 	m_outputBufferRead = std::make_unique<SampleFrame[]>(m_framesPerPeriod);
 	m_outputBufferWrite = std::make_unique<SampleFrame[]>(m_framesPerPeriod);
 
@@ -219,7 +218,7 @@ void AudioEngine::renderStageNoteSetup()
 			(*it)->audioBusHandle()->removePlayHandle(*it);
 			if((*it)->type() == PlayHandle::Type::NotePlayHandle)
 			{
-				NotePlayHandleManager::release((NotePlayHandle*)*it);
+				NotePlayHandlePool.destroy( (NotePlayHandle*) *it );
 			}
 			else delete *it;
 			m_playHandles.erase(it);
@@ -282,7 +281,7 @@ void AudioEngine::renderStageEffects()
 			(*it)->audioBusHandle()->removePlayHandle(*it);
 			if((*it)->type() == PlayHandle::Type::NotePlayHandle)
 			{
-				NotePlayHandleManager::release((NotePlayHandle*)*it);
+				NotePlayHandlePool.destroy( (NotePlayHandle*) *it );
 			}
 			else delete *it;
 			it = m_playHandles.erase(it);
@@ -472,7 +471,7 @@ bool AudioEngine::addPlayHandle( PlayHandle* handle )
 
 	if( handle->type() == PlayHandle::Type::NotePlayHandle )
 	{
-		NotePlayHandleManager::release( (NotePlayHandle*)handle );
+		NotePlayHandlePool.destroy( (NotePlayHandle*)handle );
 	}
 	else delete handle;
 
@@ -523,7 +522,7 @@ void AudioEngine::removePlayHandle(PlayHandle * ph)
 		{
 			if (ph->type() == PlayHandle::Type::NotePlayHandle)
 			{
-				NotePlayHandleManager::release(dynamic_cast<NotePlayHandle*>(ph));
+				NotePlayHandlePool.destroy(dynamic_cast<NotePlayHandle*>(ph));
 			}
 			else { delete ph; }
 		}
@@ -549,7 +548,7 @@ void AudioEngine::removePlayHandlesOfTypes(Track * track, PlayHandle::Types type
 			(*it)->audioBusHandle()->removePlayHandle(*it);
 			if((*it)->type() == PlayHandle::Type::NotePlayHandle)
 			{
-				NotePlayHandleManager::release((NotePlayHandle*)*it);
+				NotePlayHandlePool.destroy( (NotePlayHandle*) *it );
 			}
 			else delete *it;
 			it = m_playHandles.erase(it);
