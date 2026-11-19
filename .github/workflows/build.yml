@@ -1,9 +1,6 @@
 ---
 name: build
-'on':
-  push:
-    branches: [master]
-  pull_request:
+'on': [push, pull_request]
 jobs:
   linux-x86_64:
     name: linux-x86_64
