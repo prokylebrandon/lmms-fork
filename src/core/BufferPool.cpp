@@ -37,7 +37,7 @@ namespace lmms
 static std::unique_ptr<_MemoryPool_Base> pool;
 const int BM_INITIAL_BUFFERS = 256;
 
-void BufferPool::init( fpp_t framesPerPeriod )
+void BufferPool::init( f_cnt_t framesPerPeriod )
 {
 	pool.reset(new _MemoryPool_Base(framesPerPeriod * sizeof(SampleFrame), BM_INITIAL_BUFFERS));
 }
