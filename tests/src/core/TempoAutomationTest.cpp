@@ -245,7 +245,7 @@ private slots:
 
 		constexpr auto periods = 400;
 		auto elapsedFrames = 0.0;
-		auto tempoAtEnd = 0;
+		auto tempoAtEnd = 0; QString trace; auto lastDiff = 0.0;
 		{
 			AutomationClip clip(song->globalAutomationTrack());
 			clip.setProgressionType(AutomationClip::ProgressionType::Discrete);
@@ -256,7 +256,17 @@ private slots:
 
 			timeline.setTicks(0);
 			song->playSong();
-			for (int i = 0; i < periods; ++i) { audioEngine->renderNextPeriod(); }
+			for (int i = 0; i < periods; ++i)
+{
+audioEngine->renderNextPeriod();
+const auto diff = timeline.getElapsedSeconds() * audioEngine->outputSampleRate() - (i + 1.0) * audioEngine->framesPerPeriod();
+if (std::abs(diff - lastDiff) > 1.0 && trace.size() < 1500)
+{
+trace += QString(" [period %1: diff %2 (was %3), tempo %4, tick %5, offset %6]")
+.arg(i).arg(diff, 0, 'f', 2).arg(lastDiff, 0, 'f', 2).arg(song->getTempo()).arg(timeline.ticks()).arg(timeline.frameOffset());
+lastDiff = diff;
+}
+}
 			elapsedFrames = timeline.getElapsedSeconds() * audioEngine->outputSampleRate();
 			tempoAtEnd = song->getTempo();
 			song->stop();
@@ -267,7 +277,7 @@ private slots:
 		const auto renderedFrames = static_cast<double>(periods) * audioEngine->framesPerPeriod();
 		QCOMPARE(tempoAtEnd, 40);
 		QVERIFY2(std::abs(elapsedFrames - renderedFrames) <= 2.0,
-			qPrintable(QString("timeline shows %1 frames, %2 were rendered").arg(elapsedFrames).arg(renderedFrames)));
+			qPrintable(QString("timeline shows %1 frames, %2 were rendered").arg(elapsedFrames).arg(renderedFrames) + trace));
 	}
 
 	// Notes created earlier in the period that is being rendered are not in AudioEngine::playHandles() yet. A
