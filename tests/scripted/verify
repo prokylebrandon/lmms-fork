@@ -35,6 +35,8 @@ class ScriptTest():
 		Path('data/themes').mkdir(parents=True)
 		subprocess.run(['git', 'init', '-b', 'main'], check=True)
 		set_git_config()
+		# check-strings needs .gitmodules to recognise the top directory
+		create_file('.gitmodules', '')
 		create_file('src/core/classes.cpp', 'namespace lmms {\nclass TestClass\n}')
 		create_file('data/locale/de.ts',
 					'<?xml version="1.0" ?><!DOCTYPE TS><TS language="de" version="2.1">\n'
