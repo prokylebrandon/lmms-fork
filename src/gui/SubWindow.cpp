@@ -642,6 +642,13 @@ bool SubWindow::eventFilter(QObject* obj, QEvent* event)
 			}
 			return QMdiSubWindow::eventFilter(obj, event);
 			
+		case QEvent::WindowStateChange:
+			// A detached window is a real top-level window whose native frame minimizes and restores it.
+			// QMdiSubWindow's filter would mirror that onto the hidden attached frame by calling showMinimized()
+			// on it. That shows this SubWindow, and showEvent() then undoes the minimize, so the window only flickers.
+			if (isDetached()) { return false; }
+			return QMdiSubWindow::eventFilter(obj, event);
+
 		case QEvent::Hide:
 			layout()->setSizeConstraint(QLayout::SetNoConstraint);
 			return QMdiSubWindow::eventFilter(obj, event);
