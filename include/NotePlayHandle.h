@@ -294,6 +294,7 @@ private:
 	} ;
 
 	void updateFrequency();
+	void doNoteOff(const f_cnt_t offset);
 
 	InstrumentTrack* m_instrumentTrack;		// needed for calling
 											// InstrumentTrack::playNote

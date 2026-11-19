@@ -208,7 +208,7 @@ void NotePlayHandle::play( SampleFrame* _working_buffer )
 		key() > m_instrumentTrack->m_lastKeyModel.value())
 	{
 		// Release the note in case it started playing before going out of range
-		noteOff(0);
+		doNoteOff(0);
 		// Exit if the note did not start playing before going out of range (i.e. there is no need to play release)
 		if (m_totalFramesPlayed == 0)
 		{
@@ -377,6 +377,11 @@ void NotePlayHandle::noteOff( const f_cnt_t _s )
 		m_pendingRelease = true;
 		return;
 	}
+	doNoteOff(_s);
+}
+
+void NotePlayHandle::doNoteOff( const f_cnt_t _s )
+{
 	m_pendingRelease = false;
 
 	if( m_released )
