@@ -35,7 +35,6 @@ class ScriptTest():
 		Path('data/themes').mkdir(parents=True)
 		subprocess.run(['git', 'init', '-b', 'main'], check=True)
 		set_git_config()
-		subprocess.run(['git', 'submodule', 'add', '../../carla', 'plugins/CarlaBase/carla'], check=True)
 		create_file('src/core/classes.cpp', 'namespace lmms {\nclass TestClass\n}')
 		create_file('data/locale/de.ts',
 					'<?xml version="1.0" ?><!DOCTYPE TS><TS language="de" version="2.1">\n'
@@ -86,15 +85,6 @@ with tempfile.TemporaryDirectory() as tmpdir:
 	os.chdir(tmpdir)
 	check_strings = lmms_main_path / 'tests' / 'scripted' / 'check-strings'
 	check_namespace = lmms_main_path / 'tests' / 'scripted' / 'check-namespace'
-
-	# create dummy carla repo
-	Path('carla').mkdir()
-	os.chdir('carla')
-	subprocess.run(['git', 'init', '-b', 'main'], check=True)
-	set_git_config()
-	create_file('README.md', 'hello world')
-	subprocess.run(['git', 'commit', '-m', 'Initial commit'], check=True)
-	os.chdir('..')
 
 	Path('lmms').mkdir()
 	os.chdir('lmms')

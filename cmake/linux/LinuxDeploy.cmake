@@ -172,8 +172,6 @@ file(REMOVE "${APP}/${lmms}.svg")
 # Remove libraries that are normally system-provided
 file(GLOB EXCLUDE_LIBS
 	"${APP}/usr/lib/libwine*"
-	"${APP}/usr/lib/libcarla_native*"
-	"${APP}/usr/lib/${lmms}/optional/libcarla*"
 	"${APP}/usr/lib/libjack*")
 
 list(SORT EXCLUDE_LIBS)

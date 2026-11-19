@@ -43,13 +43,6 @@ if not Path('.gitmodules').is_file():
 result = subprocess.run(['git', 'ls-files', '*.[ch]', '*.[ch]pp', '*.ui', ':!tests/*'],
                         capture_output=True, text=True, check=True)
 files = [Path(f) for f in result.stdout.splitlines()]
-carlabase = 'carlabase' if Path('plugins/carlabase').is_dir() else 'CarlaBase'
-carlapath = f'plugins/{carlabase}/carla/'
-result = subprocess.run(['git',
-                         '--git-dir',   f'{carlapath}/.git',
-                         '--work-tree', f'{carlapath}',
-                         'ls-files', 'resources/ui', 'source/frontend'], capture_output=True, text=True, check=True)
-files.extend([Path(f'{carlapath}/{f}') for f in result.stdout.splitlines()])
 
 classes = set()
 class_pat = re.compile(r'^\s*class(?:\s+LMMS_EXPORT)?\s+([a-zA-Z_][a-zA-Z0-9_]*)', re.MULTILINE)

@@ -89,20 +89,6 @@ get_filename_component(QTBIN "${CPACK_QMAKE_EXECUTABLE}" DIRECTORY)
 get_filename_component(QTDIR "${QTBIN}" DIRECTORY)
 create_symlink("${QTDIR}/lib" "${CPACK_TEMPORARY_INSTALL_DIRECTORY}/lib")
 
-# Replace @rpath with @loader_path for Carla
-execute_process(COMMAND install_name_tool -change
-	"@rpath/libcarlabase.dylib"
-	"@loader_path/libcarlabase.dylib"
-	"${APP}/Contents/lib/${lmms}/libcarlapatchbay.so"
-	COMMAND_ECHO ${COMMAND_ECHO}
-	COMMAND_ERROR_IS_FATAL ANY)
-execute_process(COMMAND install_name_tool -change
-	"@rpath/libcarlabase.dylib"
-	"@loader_path/libcarlabase.dylib"
-	"${APP}/Contents/lib/${lmms}/libcarlarack.so"
-	COMMAND_ECHO ${COMMAND_ECHO}
-	COMMAND_ERROR_IS_FATAL ANY)
-
 # Build list of executables to inform macdeployqt about
 # e.g. -executable=foo.dylib -executable=bar.dylib
 file(GLOB LIBS "${APP}/Contents/lib/${lmms}/*.so")
@@ -154,23 +140,6 @@ execute_process(COMMAND "${QTBIN}/macdeployqt" "${APP}" ${EXECUTABLES}
 
 # Cleanup symlink
 file(REMOVE "${CPACK_TEMPORARY_INSTALL_DIRECTORY}/lib")
-
-# Remove dummy carla libs, relink to a sane location (e.g. /Applications/Carla.app/...)
-# (must be done after calling macdeployqt)
-file(GLOB CARLALIBS "${APP}/Contents/lib/${lmms}/libcarla*")
-foreach(_carlalib IN LISTS CARLALIBS)
-	foreach(_lib "${CPACK_CARLA_LIBRARIES}")
-		set(_oldpath "../../Frameworks/lib${_lib}.dylib")
-		set(_newpath "Carla.app/Contents/MacOS/lib${_lib}.dylib")
-		execute_process(COMMAND install_name_tool -change
-			"@loader_path/${_oldpath}"
-			"@executable_path/../../../${_newpath}"
-			"${_carlalib}"
-			COMMAND_ECHO ${COMMAND_ECHO}
-			COMMAND_ERROR_IS_FATAL ANY)
-		file(REMOVE "${APP}/Contents/Frameworks/lib${_lib}.dylib")
-	endforeach()
-endforeach()
 
 # Call ad-hoc codesign manually (CMake offers this as well)
 execute_process(COMMAND codesign --force --deep --sign - "${APP}"
