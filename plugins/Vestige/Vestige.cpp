@@ -199,7 +199,11 @@ void VestigeInstrument::loadSettings( const QDomElement & _this )
 		return;
 	}
 
-	loadFile( plugin );
+	// The same plugin is already running (e.g. an undo restoring this instrument): keep it and its
+	// parameter models and only apply the saved state, instead of closing and reopening the plugin.
+	const bool keepPlugin = m_plugin != nullptr && knobFModel != nullptr
+		&& m_pluginDLL == PathUtil::toShortestRelative( plugin );
+	if( !keepPlugin ) { loadFile( plugin ); }
 	m_pluginMutex.lock();
 	if( m_plugin != nullptr )
 	{
@@ -220,9 +224,27 @@ void VestigeInstrument::loadSettings( const QDomElement & _this )
 		const QMap<QString, QString> & dump = m_plugin->parameterDump();
 		paramCount = dump.size();
 		auto paramStr = std::array<char, 35>{};
-		knobFModel = new FloatModel *[ paramCount ];
 		QStringList s_dumpValues;
-		for( int i = 0; i < paramCount; i++ )
+		if( keepPlugin )
+		{
+			// Same plugin, same parameter models: bring them to the saved values
+			for( int i = 0; i < paramCount; i++ )
+			{
+				std::snprintf(paramStr.data(), paramStr.size(), "param%d", i);
+				s_dumpValues = dump[paramStr.data()].split(":");
+
+				knobFModel[i]->loadSettings(_this, paramStr.data());
+				if( !( knobFModel[i]->isAutomated() || knobFModel[i]->controllerConnection() ) )
+				{
+					knobFModel[i]->setValue(LocaleHelper::toFloat(s_dumpValues.at(2)));
+				}
+			}
+		}
+		else
+		{
+			knobFModel = new FloatModel *[ paramCount ];
+		}
+		for( int i = 0; !keepPlugin && i < paramCount; i++ )
 		{
 			std::snprintf(paramStr.data(), paramStr.size(), "param%d", i);
 			s_dumpValues = dump[paramStr.data()].split(":");
@@ -681,6 +703,7 @@ void VestigeInstrumentView::openPlugin()
 		{
 			return;
 		}
+		m_vi->addJournalCheckPoint();
 		Engine::audioEngine()->requestChangeInModel();
 
 		if (m_vi->p_subWindow != nullptr) {
