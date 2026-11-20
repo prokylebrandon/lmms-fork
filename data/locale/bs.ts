@@ -950,19 +950,6 @@ If you&apos;re interested in translating LMMS in another language or want to imp
     </message>
 </context>
 <context>
-    <name>CarlaInstrumentView</name>
-    <message>
-        <location filename="plugins/CarlaBase/Carla.cpp" line="486"/>
-        <source>Show GUI</source>
-        <translation type="unfinished"/>
-    </message>
-    <message>
-        <location filename="plugins/CarlaBase/Carla.cpp" line="494"/>
-        <source>Click here to show or hide the graphical user interface (GUI) of Carla.</source>
-        <translation type="unfinished"/>
-    </message>
-</context>
-<context>
     <name>Controller</name>
     <message>
         <location filename="src/core/Controller.cpp" line="63"/>
