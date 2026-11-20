@@ -166,6 +166,8 @@ private:
 
 signals:
 	void destroyedMidiClip( lmms::MidiClip* );
+	//! Emitted just before all notes are deleted, so views can drop pointers to them
+	void notesAboutToClear();
 } ;
 
 

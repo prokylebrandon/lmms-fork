@@ -262,6 +262,8 @@ void MidiClip::rearrangeAllNotes()
 
 void MidiClip::clearNotes()
 {
+	emit notesAboutToClear();
+
 	instrumentTrack()->lock();
 	for (const auto& note : m_notes)
 	{

@@ -918,6 +918,14 @@ void PianoRoll::setCurrentMidiClip( MidiClip* newMidiClip )
 	connect( m_midiClip->instrumentTrack(), SIGNAL( midiNoteOn( const lmms::Note& ) ), this, SLOT( startRecordNote( const lmms::Note& ) ) );
 	connect( m_midiClip->instrumentTrack(), SIGNAL( midiNoteOff( const lmms::Note& ) ), this, SLOT( finishRecordNote( const lmms::Note& ) ) );
 	connect( m_midiClip, SIGNAL(dataChanged()), this, SLOT(update()));
+	connect(m_midiClip, &MidiClip::notesAboutToClear, this, [this]()
+	{
+		// Undo/redo deletes and recreates every note: cancel a drag in progress and forget old pointers
+		if (m_currentNote || m_parameterEditClickedNote) { m_action = Action::None; }
+		m_currentNote = nullptr;
+		m_parameterEditClickedNote = nullptr;
+		m_selectedChords.clear();
+	});
 	connect( m_midiClip->instrumentTrack()->pianoModel(), SIGNAL(dataChanged()), this, SLOT(update()));
 
 	connect(m_midiClip->instrumentTrack()->firstKeyModel(), SIGNAL(dataChanged()), this, SLOT(update()));
