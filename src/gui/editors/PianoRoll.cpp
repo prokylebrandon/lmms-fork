@@ -1941,7 +1941,7 @@ void PianoRoll::mousePressEvent(QMouseEvent * me )
 						m_currentNote->endPos() * m_ppb / TimePos::ticksPerBar() - resizeGripWidth(*m_currentNote)
 					&& m_currentNote->length() > 0 )
 				{
-					m_midiClip->addJournalCheckPoint();
+					if (!created_new_note) { m_midiClip->addJournalCheckPoint(); }
 					// then resize the note
 					m_action = Action::ResizeNote;
 
