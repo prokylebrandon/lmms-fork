@@ -656,7 +656,14 @@ void EuclideanRhythmWindow::previewTick()
 	const double pos = std::fmod(elapsed, cycleMs) / cycleMs;
 	const double previous = m_lastPos;
 	m_lastPos = pos;
-	m_circle->setPlayhead(pos);
+	// Notes are still scheduled on every tick, but the circle only needs about 60 repaints a second.
+	// The check for a smaller value covers the preview clock being restarted.
+	const qint64 nowNs = m_clock.nsecsElapsed();
+	if (nowNs < m_lastPlayheadUpdateNs || nowNs - m_lastPlayheadUpdateNs >= 16000000)
+	{
+		m_lastPlayheadUpdateNs = nowNs;
+		m_circle->setPlayhead(pos);
+	}
 
 	const double swing = m_swing->value() / 100.0;
 	for (const auto& rowPtr : m_rows)

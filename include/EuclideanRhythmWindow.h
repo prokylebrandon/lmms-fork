@@ -115,6 +115,7 @@ private:
 	std::vector<std::unique_ptr<Row>> m_rows;
 
 	QTimer m_previewTimer;
+	qint64 m_lastPlayheadUpdateNs = 0; //!< Preview clock time of the last circle repaint
 	QElapsedTimer m_clock;
 	double m_lastPos = -1.0;
 };
