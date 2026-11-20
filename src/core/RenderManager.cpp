@@ -85,6 +85,7 @@ void RenderManager::renderNextTrack()
 	if (m_activeRenderer && m_activeRenderer->hasWriteError())
 	{
 		const auto file = m_activeRenderer->outputFile();
+		m_failed = true;
 		m_activeRenderer.reset();
 		m_tracksToRender.clear();
 		restoreMutedState();
@@ -159,6 +160,34 @@ void RenderManager::renderTracks()
 	renderNextTrack();
 }
 
+// Render a single track (all other tracks are muted) into the file m_outputPath
+void RenderManager::renderTrack(Track* target)
+{
+	m_failed = false;
+
+	const auto collect = [this](const TrackContainer::TrackList& list)
+	{
+		for (const auto& tk : list)
+		{
+			const auto type = tk->type();
+			if (!tk->isMuted() && (type == Track::Type::Instrument || type == Track::Type::Sample))
+			{
+				m_unmuted.push_back(tk);
+			}
+		}
+	};
+	collect(Engine::getSong()->tracks());
+	collect(Engine::patternStore()->tracks());
+
+	for (auto track : m_unmuted)
+	{
+		track->setMuted(track != target);
+	}
+
+	m_tracksToRender.clear();
+	render(m_outputPath);
+}
+
 // Render the song into a single track
 void RenderManager::renderProject()
 {
@@ -185,6 +214,7 @@ void RenderManager::render(QString outputPath)
 	else
 	{
 		qWarning( "Renderer failed to acquire a file device!" );
+		m_failed = true;
 		m_tracksToRender.clear();
 		reportRenderError(tr("Export failed"),
 			tr("Could not start exporting to %1.\nThe audio encoder failed to initialize (unsupported settings, or the file could not be written).").arg(outputPath));

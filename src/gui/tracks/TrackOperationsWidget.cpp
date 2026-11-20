@@ -24,6 +24,21 @@
 
 #include "TrackOperationsWidget.h"
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QProgressDialog>
+#include <QRegularExpression>
+#include <memory>
+
+#include "AudioEngine.h"
+#include "Engine.h"
+#include "OutputSettings.h"
+#include "RenderManager.h"
+#include "SampleClip.h"
+#include "Song.h"
+
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QMenu>
@@ -271,6 +286,12 @@ void TrackOperationsWidget::updateMenu()
 		toMenu->addAction( tr( "Turn all recording off" ), this, SLOT(recordingOff()));
 	}
 
+	if (const auto type = m_trackView->getTrack()->type(); type == Track::Type::Instrument || type == Track::Type::Sample)
+	{
+		QMenu* freezeMenu = toMenu->addMenu(tr("Freeze / Bounce"));
+		freezeMenu->addAction(tr("Bounce to sample track"), this, SLOT(bounceTrack()));
+	}
+
 	toMenu->addSeparator();
 
 	QMenu* colorMenu = toMenu->addMenu(tr("Track color"));
@@ -280,6 +301,103 @@ void TrackOperationsWidget::updateMenu()
 	colorMenu->addAction(tr("Pick random"), this, SLOT(randomizeTrackColor()));
 	colorMenu->addSeparator();
 	colorMenu->addAction(tr("Reset clip colors"), this, SLOT(resetClipColors()));
+}
+
+
+void TrackOperationsWidget::bounceTrack()
+{
+	auto song = Engine::getSong();
+	auto track = m_trackView->getTrack();
+
+	if (song->isExporting()) { return; }
+
+	if (track->isMuted())
+	{
+		QMessageBox::information(this, tr("Bounce to sample track"), tr("Unmute the track before bouncing it."));
+		return;
+	}
+
+	const QString projectFile = song->projectFileName();
+	if (projectFile.isEmpty())
+	{
+		QMessageBox::information(this, tr("Bounce to sample track"),
+			tr("Save the project first. Bounced audio is stored in a \"bounces\" folder next to the project file."));
+		return;
+	}
+
+	const QString bounceDir = QFileInfo{projectFile}.absolutePath() + QStringLiteral("/bounces");
+	if (!QDir().mkpath(bounceDir))
+	{
+		QMessageBox::warning(this, tr("Bounce to sample track"), tr("Could not create the folder %1.").arg(bounceDir));
+		return;
+	}
+
+	const QString trackName = track->name();
+	auto baseName = trackName;
+	baseName.remove(QRegularExpression{QStringLiteral("[^A-Za-z0-9_\\- ]")});
+	if (baseName.isEmpty()) { baseName = QStringLiteral("track"); }
+
+	QString path;
+	for (int i = 1;; ++i)
+	{
+		path = QStringLiteral("%1/%2_bounce%3.wav").arg(bounceDir, baseName).arg(i);
+		if (!QFile::exists(path)) { break; }
+	}
+
+	song->setExportLoop(false);
+	song->setRenderBetweenMarkers(false);
+	song->setExportTail(true);
+	song->setLoopRenderCount(1);
+
+	const auto settings = OutputSettings(Engine::audioEngine()->outputSampleRate(), static_cast<bitrate_t>(0),
+		OutputSettings::BitDepth::Depth32Bit);
+
+	auto renderManager = new RenderManager(settings, ProjectRenderer::ExportFileFormat::Wave, path);
+
+	auto progress = new QProgressDialog(tr("Bouncing \"%1\"...").arg(trackName), tr("Cancel"), 0, 100, nullptr);
+	progress->setWindowTitle(tr("Bounce to sample track"));
+	progress->setWindowModality(Qt::ApplicationModal);
+	progress->setMinimumDuration(0);
+	progress->setAutoClose(false);
+	progress->setAutoReset(false);
+
+	// Only true when the render finished without errors. It is checked once the RenderManager is gone,
+	// because the wav file is complete only after its file device has been closed.
+	auto succeeded = std::make_shared<bool>(false);
+
+	connect(renderManager, &RenderManager::progressChanged, progress, &QProgressDialog::setValue);
+	connect(progress, &QProgressDialog::canceled, renderManager, [renderManager, progress]()
+	{
+		renderManager->abortProcessing();
+		progress->deleteLater();
+		renderManager->deleteLater();
+	});
+	connect(renderManager, &RenderManager::finished, renderManager, [renderManager, progress, succeeded]()
+	{
+		*succeeded = !renderManager->failed();
+		progress->deleteLater();
+		renderManager->deleteLater();
+	});
+	connect(renderManager, &QObject::destroyed, [path, trackName, succeeded]()
+	{
+		if (*succeeded && QFileInfo::exists(path))
+		{
+			auto sampleTrack = Track::create(Track::Type::Sample, Engine::getSong());
+			sampleTrack->setName(TrackOperationsWidget::tr("%1 (bounce)").arg(trackName));
+			if (auto clip = dynamic_cast<SampleClip*>(sampleTrack->createClip(TimePos(0))))
+			{
+				clip->setSampleFile(path);
+			}
+			Engine::getSong()->setModified();
+		}
+		else
+		{
+			QFile::remove(path);
+		}
+	});
+
+	progress->show();
+	renderManager->renderTrack(track);
 }
 
 

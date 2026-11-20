@@ -80,6 +80,7 @@ private slots:
 	void recordingOn();
 	void recordingOff();
 	void clearTrack(); //!< Clears all Clips from the track
+	void bounceTrack(); //!< Renders this track alone into a wav file and adds it as a new sample track
 
 private:
 	TrackView * m_trackView;

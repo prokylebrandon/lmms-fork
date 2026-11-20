@@ -50,6 +50,12 @@ public:
 	/// Export all unmuted tracks into individual file
 	void renderTracks();
 
+	/// Export only the given (unmuted) track into the single file m_outputPath, all other tracks are muted
+	void renderTrack(Track* track);
+
+	//! True if the last render failed (file device could not be opened or writing failed)
+	bool failed() const { return m_failed; }
+
 	void abortProcessing();
 
 signals:
@@ -74,6 +80,7 @@ private:
 
 	std::vector<Track*> m_tracksToRender;
 	std::vector<Track*> m_unmuted;
+	bool m_failed = false;
 } ;
 
 
