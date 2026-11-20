@@ -30,6 +30,8 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
+#include <vector>
 #include <stack>
 
 #include "AutomationClip.h"
@@ -202,26 +204,103 @@ bool MidiExport::tryExport(const TrackContainer::TrackList& tracks,
 	return true;
 }
 
-//! Writes the Pitch knob of an instrument track as pitch bend messages: its own value when it is not automated,
-//! or the curves of all automation clips that control it.
-static void writePitchBends(InstrumentTrack& instTrack, MidiFile::Track& midiTrack)
+namespace
 {
-	constexpr int SampleSpacing = 4;  // LMMS ticks between bend messages on a curve (48 ticks make a beat)
+
+//! A node of a note's detuning curve: position in ticks from the note start, values in semitones
+struct DetuneNode
+{
+	tick_t pos = 0;
+	float in = 0.0f;
+	float out = 0.0f;
+};
+
+//! The detuning curve of one note on the song timeline
+struct DetuneSegment
+{
+	tick_t start = 0;
+	tick_t end = 0;
+	bool linear = true; // discrete curves hold each value, linear and cubic curves are read as linear
+	std::vector<DetuneNode> nodes;
+
+	float valueAt(tick_t tick) const
+	{
+		const tick_t rel = tick - start;
+		// Like LMMS: no detuning before the first node, the last node's value after the last one
+		if (nodes.empty() || rel < nodes.front().pos) { return 0.0f; }
+
+		std::size_t i = 0;
+		while (i + 1 < nodes.size() && nodes[i + 1].pos <= rel) { ++i; }
+		const DetuneNode& a = nodes[i];
+		if (rel == a.pos) { return a.in; }
+		if (i + 1 >= nodes.size() || !linear) { return a.out; }
+
+		const DetuneNode& b = nodes[i + 1];
+		const auto span = static_cast<float>(b.pos - a.pos);
+		return span > 0.0f ? a.out + (b.in - a.out) * static_cast<float>(rel - a.pos) / span : a.out;
+	}
+};
+
+//! Reads the detuning curves of all notes of a track from its saved state, sorted by start time
+std::vector<DetuneSegment> collectDetuneSegments(const QDomElement& root)
+{
+	std::vector<DetuneSegment> segments;
+	for (QDomElement clip = root.firstChildElement("midiclip"); !clip.isNull();
+		clip = clip.nextSiblingElement("midiclip"))
+	{
+		const tick_t clipStart = std::max(clip.attribute("pos", "0").toInt(), 0);
+		for (QDomElement note = clip.firstChildElement(); !note.isNull(); note = note.nextSiblingElement())
+		{
+			const int length = note.attribute("len", "0").toInt();
+			if (length <= 0) { continue; }
+
+			const QDomElement curve = note.firstChildElement("automationclip").firstChildElement("detuning");
+			if (curve.isNull()) { continue; }
+
+			DetuneSegment segment;
+			segment.start = clipStart + std::max(note.attribute("pos", "0").toInt(), 0);
+			segment.end = segment.start + length;
+			segment.linear = curve.attribute("prog", "1").toInt() != 0;
+			for (QDomElement time = curve.firstChildElement("time"); !time.isNull();
+				time = time.nextSiblingElement("time"))
+			{
+				DetuneNode node;
+				node.pos = time.attribute("pos", "0").toInt();
+				node.in = static_cast<float>(LocaleHelper::toDouble(time.attribute("value", "0")));
+				node.out = time.hasAttribute("outValue")
+					? static_cast<float>(LocaleHelper::toDouble(time.attribute("outValue"))) : node.in;
+				segment.nodes.push_back(node);
+			}
+			if (segment.nodes.empty()) { continue; }
+
+			std::sort(segment.nodes.begin(), segment.nodes.end(),
+				[](const DetuneNode& a, const DetuneNode& b) { return a.pos < b.pos; });
+			segments.push_back(std::move(segment));
+		}
+	}
+	std::sort(segments.begin(), segments.end(),
+		[](const DetuneSegment& a, const DetuneSegment& b) { return a.start < b.start; });
+	return segments;
+}
+
+} // namespace
+
+//! Writes the pitch of an instrument track as pitch bend messages: the Pitch knob (its own value, or the curves of
+//! the automation clips that control it) plus the detuning curve of the note that is sounding. A MIDI channel has one
+//! bend value, so when detuned notes overlap, the most recently started one decides.
+//! Detuning is not exported for beat pattern tracks, whose clips are repeated by the pattern writer.
+static void writePitchBends(InstrumentTrack& instTrack, MidiFile::Track& midiTrack,
+	const QDomElement& root, bool isPattern)
+{
+	constexpr tick_t SampleSpacing = 4; // LMMS ticks between bend messages on a curve (48 ticks make a beat)
 	constexpr std::uint16_t CentreBend = 8192;
 
 	FloatModel* pitchModel = instTrack.pitchModel();
-	const float maxPitch = pitchModel->maxValue();
-	if (maxPitch <= 0.0f) { return; }
 
-	// LMMS maps the knob (in cents) onto the whole bend range, so a full bend equals the pitch range in semitones
-	const auto toBend = [maxPitch](float value)
-	{
-		const long bend = std::lround(8192.0f + value / maxPitch * 8192.0f);
-		return static_cast<std::uint16_t>(std::clamp(bend, 0L, 16383L));
-	};
-
-	// tick -> bend. The map keeps the messages sorted and leaves one message per tick.
-	std::map<tick_t, std::uint16_t> bends;
+	// Pitch knob in cents: a step function over the sampled ticks, or just its own value when it is not automated
+	std::map<tick_t, float> knob;
+	float knobStart = 0.0f;
+	std::set<tick_t> ticks{0};
 
 	bool automated = false;
 	const auto clips = AutomationClip::clipsForModel(pitchModel);
@@ -239,7 +318,8 @@ static void writePitchBends(InstrumentTrack& instTrack, MidiFile::Track& midiTra
 		{
 			const tick_t absolute = start + relative - offset;
 			if (absolute < start || absolute > end) { return; }
-			bends[absolute] = toBend(clip->valueAt(TimePos(relative)));
+			knob[absolute] = clip->valueAt(TimePos(relative));
+			ticks.insert(absolute);
 		};
 
 		// Both sides of every node (so jumps come out right), plus regular samples in between for the curves
@@ -253,25 +333,70 @@ static void writePitchBends(InstrumentTrack& instTrack, MidiFile::Track& midiTra
 			addAt(relative);
 		}
 	}
+	// Until the first automation clip starts LMMS keeps the knob's own value, which is not known here: assume centre
+	if (!automated) { knobStart = pitchModel->value(); }
 
-	if (!automated)
+	std::vector<DetuneSegment> detune;
+	if (!isPattern) { detune = collectDetuneSegments(root); }
+	for (const DetuneSegment& segment : detune)
 	{
-		if (pitchModel->value() != 0.0f) { bends[0] = toBend(pitchModel->value()); }
+		ticks.insert(segment.start);
+		ticks.insert(segment.end); // back to no detuning when the note ends
+		for (tick_t tick = segment.start; tick < segment.end; tick += SampleSpacing) { ticks.insert(tick); }
+		for (const DetuneNode& node : segment.nodes)
+		{
+			for (const tick_t tick : {segment.start + node.pos, segment.start + node.pos + 1})
+			{
+				if (tick >= segment.start && tick < segment.end) { ticks.insert(tick); }
+			}
+		}
 	}
-	else if (!bends.empty() && bends.begin()->first > 0)
+
+	const auto knobAt = [&](tick_t tick)
 	{
-		// Until the first clip starts LMMS keeps the knob's own value, which is not known here: assume centre
-		bends.emplace(0, CentreBend);
+		const auto it = knob.upper_bound(tick);
+		return it == knob.begin() ? knobStart : std::prev(it)->second;
+	};
+	const auto detuneAt = [&](tick_t tick)
+	{
+		const DetuneSegment* active = nullptr;
+		for (const DetuneSegment& segment : detune)
+		{
+			if (segment.start > tick) { break; }
+			if (tick < segment.end) { active = &segment; }
+		}
+		return active ? active->valueAt(tick) : 0.0f;
+	};
+
+	// Total pitch offset in semitones at every tick that matters
+	std::vector<std::pair<tick_t, float>> semitones;
+	float maxAbs = 0.0f;
+	for (const tick_t tick : ticks)
+	{
+		const float value = knobAt(tick) / 100.0f + detuneAt(tick);
+		semitones.emplace_back(tick, value);
+		maxAbs = std::max(maxAbs, std::abs(value));
 	}
+	if (maxAbs < 0.001f) { return; } // nothing to export
+
+	// At least the track's own pitch range, wider if a detuning curve reaches further
+	const int range = std::clamp(
+		std::max(instTrack.pitchRangeModel()->value(), static_cast<int>(std::ceil(maxAbs))), 1, 96);
+	const auto toBend = [range](float value)
+	{
+		const long bend = std::lround(8192.0f + value / static_cast<float>(range) * 8192.0f);
+		return static_cast<std::uint16_t>(std::clamp(bend, 0L, 16383L));
+	};
 
 	std::uint16_t current = CentreBend; // a MIDI channel starts centred
 	bool rangeWritten = false;
-	for (const auto& [tick, bend] : bends)
+	for (const auto& [tick, value] : semitones)
 	{
+		const std::uint16_t bend = toBend(value);
 		if (bend == current) { continue; }
 		if (!rangeWritten)
 		{
-			midiTrack.addPitchBendRange(static_cast<std::uint8_t>(std::clamp(instTrack.pitchRangeModel()->value(), 1, 60)), 0);
+			midiTrack.addPitchBendRange(static_cast<std::uint8_t>(range), 0);
 			rangeWritten = true;
 		}
 		midiTrack.addPitchBend(bend, tick / 48.0);
@@ -318,7 +443,7 @@ void MidiExport::processTrack(Track& track, MidiFile::Track& midiTrack,
 	}
 	midiTrack.addPatch(patch, 0);
 
-	writePitchBends(instTrack, midiTrack);
+	writePitchBends(instTrack, midiTrack, root, isPattern);
 
 	// ---- Instrument track ---- //
 	QDomNode trackNode = root.firstChildElement("instrumenttrack");
