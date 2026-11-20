@@ -634,25 +634,48 @@ void MidiClipView::paintEvent( QPaintEvent * )
 	// Beat clip paint event (on BB Editor)
 	if (beatClip && displayPattern)
 	{
-		QPixmap stepon0;
-		QPixmap stepon200;
-		QPixmap stepoff;
-		QPixmap stepoffl;
-		QPixmap stephighlight;
 		const int steps = std::max(1, m_clip->m_steps);
 		const int w = width() - 2 * BORDER_WIDTH;
+		const int scaledStepWidth = w / steps;
 
-		// scale step graphics to fit the beat clip length
-		stepon0
-			= m_stepBtnOn0.scaled(w / steps, m_stepBtnOn0.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-		stepon200 = m_stepBtnOn200.scaled(
-			w / steps, m_stepBtnOn200.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-		stepoff
-			= m_stepBtnOff.scaled(w / steps, m_stepBtnOff.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-		stepoffl = m_stepBtnOffLight.scaled(
-			w / steps, m_stepBtnOffLight.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-		stephighlight = m_stepBtnHighlight.scaled(
-			w / steps, m_stepBtnHighlight.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+		// The scaled step graphics only depend on the step width and on the source pixmaps, so they are kept
+		// between paints instead of smooth-scaling five pixmaps for every beat clip on every repaint.
+		// The cache is deliberately never freed: a pixmap must not be destroyed after the QApplication is gone.
+		struct StepPixmapCache
+		{
+			int stepWidth = -1;
+			qint64 keyOn0 = 0, keyOn200 = 0, keyOff = 0, keyOffLight = 0, keyHighlight = 0;
+			QPixmap on0, on200, off, offLight, highlight;
+		};
+		static auto* const stepCache = new StepPixmapCache;
+		if (stepCache->stepWidth != scaledStepWidth
+			|| stepCache->keyOn0 != m_stepBtnOn0.cacheKey()
+			|| stepCache->keyOn200 != m_stepBtnOn200.cacheKey()
+			|| stepCache->keyOff != m_stepBtnOff.cacheKey()
+			|| stepCache->keyOffLight != m_stepBtnOffLight.cacheKey()
+			|| stepCache->keyHighlight != m_stepBtnHighlight.cacheKey())
+		{
+			const auto scale = [scaledStepWidth](const QPixmap& source)
+			{
+				return source.scaled(scaledStepWidth, source.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+			};
+			stepCache->on0 = scale(m_stepBtnOn0);
+			stepCache->on200 = scale(m_stepBtnOn200);
+			stepCache->off = scale(m_stepBtnOff);
+			stepCache->offLight = scale(m_stepBtnOffLight);
+			stepCache->highlight = scale(m_stepBtnHighlight);
+			stepCache->stepWidth = scaledStepWidth;
+			stepCache->keyOn0 = m_stepBtnOn0.cacheKey();
+			stepCache->keyOn200 = m_stepBtnOn200.cacheKey();
+			stepCache->keyOff = m_stepBtnOff.cacheKey();
+			stepCache->keyOffLight = m_stepBtnOffLight.cacheKey();
+			stepCache->keyHighlight = m_stepBtnHighlight.cacheKey();
+		}
+		const QPixmap& stepon0 = stepCache->on0;
+		const QPixmap& stepon200 = stepCache->on200;
+		const QPixmap& stepoff = stepCache->off;
+		const QPixmap& stepoffl = stepCache->offLight;
+		const QPixmap& stephighlight = stepCache->highlight;
 
 		for (int it = 0; it < steps; it++)	// go through all the steps in the beat clip
 		{
