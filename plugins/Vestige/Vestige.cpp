@@ -49,6 +49,7 @@
 #include "MainWindow.h"
 #include "PathUtil.h"
 #include "PixmapButton.h"
+#include "ProjectJournal.h"
 #include "Song.h"
 #include "StringPairDrag.h"
 #include "SubWindow.h"
@@ -374,7 +375,8 @@ void VestigeInstrument::loadFile( const QString & _file )
 	}
 	m_pluginDLL = PathUtil::toShortestRelative( _file );
 	gui::TextFloat * tf = nullptr;
-	if( gui::getGUI() != nullptr )
+	// no popup when an undo/redo is recreating the instrument
+	if( gui::getGUI() != nullptr && !( Engine::projectJournal() && Engine::projectJournal()->isRestoring() ) )
 	{
 		tf = gui::TextFloat::displayMessage(
 				tr( "Loading plugin" ),

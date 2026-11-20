@@ -69,6 +69,9 @@ public:
 		m_journalling = _on;
 	}
 
+	//! true while undo/redo is restoring a checkpoint
+	bool isRestoring() const { return m_restoring; }
+
 	// alloc new ID and register object _obj to it
 	jo_id_t allocID( JournallingObject * _obj );
 
