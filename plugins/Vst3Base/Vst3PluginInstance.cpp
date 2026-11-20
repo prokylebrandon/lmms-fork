@@ -1189,7 +1189,7 @@ void Vst3PluginInstance::processAudio(const float* inputs,
     // after that NoteOn in the list; the sort below keeps the whole list in ascending offset order.
     for (int noteId = 0; noteId <= MidiMaxKey; ++noteId)
     {
-        if (m_noteTuningDirty[noteId].exchange(false, std::memory_order_acquire))
+        if (m_noteTuningDirty[noteId].load(std::memory_order_relaxed) && m_noteTuningDirty[noteId].exchange(false, std::memory_order_acquire))
         {
             eventList.addNoteTuning(noteId, m_noteTuning[noteId].load(std::memory_order_relaxed), eventList.noteOnOffset(noteId));
         }
