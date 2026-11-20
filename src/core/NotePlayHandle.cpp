@@ -499,8 +499,10 @@ ConstNotePlayHandleList NotePlayHandle::nphsOfInstrumentTrack( const InstrumentT
 
 	for (const auto& playHandle : playHandles)
 	{
-		const auto nph = dynamic_cast<const NotePlayHandle*>(playHandle);
-		if( nph != nullptr && nph->m_instrumentTrack == _it && ( ( nph->isReleased() == false && nph->hasParent() == false ) || _all_ph == true ) )
+		// type check instead of dynamic_cast: this scan runs every period for every single-stream instrument
+		if (playHandle->type() != PlayHandle::Type::NotePlayHandle) { continue; }
+		const auto nph = static_cast<const NotePlayHandle*>(playHandle);
+		if( nph->m_instrumentTrack == _it && ( ( nph->isReleased() == false && nph->hasParent() == false ) || _all_ph == true ) )
 		{
 			cnphv.push_back( nph );
 		}
