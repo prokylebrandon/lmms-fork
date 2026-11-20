@@ -1253,7 +1253,10 @@ void MainWindow::updateUndoRedoButtons()
 
 void MainWindow::undo()
 {
-	Engine::projectJournal()->undo();
+	const bool done = Engine::projectJournal()->undo();
+	TextFloat::displayMessage(done ? tr("Undo performed") : tr("Nothing to undo"),
+		done ? tr("The last change was undone.") : tr("There is nothing left to undo."),
+		QPixmap(), 1500);
 }
 
 
@@ -1261,7 +1264,10 @@ void MainWindow::undo()
 
 void MainWindow::redo()
 {
-	Engine::projectJournal()->redo();
+	const bool done = Engine::projectJournal()->redo();
+	TextFloat::displayMessage(done ? tr("Redo performed") : tr("Nothing to redo"),
+		done ? tr("The last undone change was restored.") : tr("There is nothing left to redo."),
+		QPixmap(), 1500);
 }
 
 

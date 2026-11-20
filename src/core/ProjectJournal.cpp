@@ -24,6 +24,7 @@
 
 #include <cstdlib>
 #include <QDomElement>
+#include <QTextStream>
 
 #include "ProjectJournal.h"
 #include "Engine.h"
@@ -101,6 +102,18 @@ private:
 } // namespace
 
 
+//! Serialized form of an element, used to tell whether two saved states are identical
+static QString elementText(const QDomElement& element)
+{
+	QString text;
+	{
+		QTextStream stream(&text);
+		element.save(stream, -1);
+	}
+	return text;
+}
+
+
 bool ProjectJournal::stepCheckPoints(CheckPointStack& from, CheckPointStack& to)
 {
 	// An undo/redo started while another one is still restoring would corrupt both stacks.
@@ -130,6 +143,14 @@ bool ProjectJournal::stepCheckPoints(CheckPointStack& from, CheckPointStack& to)
 		DataFile previousState(DataFile::Type::JournalData);
 		jo->saveState(previousState, previousState.content());
 		const bool canReverse = !previousState.content().firstChildElement().isNull();
+
+		// A checkpoint identical to the current state (e.g. a knob that was clicked but not moved)
+		// would restore nothing, so the keypress looked like undo did nothing. Drop it and take
+		// the next older entry instead.
+		if (canReverse && elementText(saved) == elementText(previousState.content().firstChildElement()))
+		{
+			continue;
+		}
 
 		try
 		{
