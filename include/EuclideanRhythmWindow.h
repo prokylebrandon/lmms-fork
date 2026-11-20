@@ -31,6 +31,7 @@
 #include <memory>
 #include <vector>
 
+class QContextMenuEvent;
 class QLabel;
 class QPushButton;
 class QSlider;
@@ -83,16 +84,18 @@ public:
 protected:
 	void showEvent(QShowEvent* event) override;
 	void hideEvent(QHideEvent* event) override;
+	void contextMenuEvent(QContextMenuEvent* event) override;
 
 private slots:
 	void addRhythm();
-	void removeRhythm();
 	void refreshInstruments();
 	void togglePreview(bool on);
 	void previewTick();
 
 private:
 	struct Row;
+
+	void removeRhythm(Row* row);
 
 	void stepsChanged(Row& row);
 	void rowEdited(Row& row);
@@ -109,8 +112,6 @@ private:
 	EuclideanCircleView* m_circle = nullptr;
 	QWidget* m_rowsHost = nullptr;
 	QVBoxLayout* m_rowsLayout = nullptr;
-	QPushButton* m_addButton = nullptr;
-	QPushButton* m_removeButton = nullptr;
 
 	std::vector<std::unique_ptr<Row>> m_rows;
 

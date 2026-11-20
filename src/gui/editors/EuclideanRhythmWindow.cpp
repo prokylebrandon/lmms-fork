@@ -22,6 +22,10 @@
 
 #include "EuclideanRhythmWindow.h"
 
+#include <QAction>
+#include <QContextMenuEvent>
+#include <QMenu>
+
 #include <QApplication>
 #include <QComboBox>
 #include <QCursor>
@@ -371,17 +375,10 @@ EuclideanRhythmWindow::EuclideanRhythmWindow()
 	body->addWidget(m_circle, 1);
 
 	auto right = new QVBoxLayout();
-	auto buttons = new QHBoxLayout();
-	m_addButton = new QPushButton(QStringLiteral("+"), this);
-	m_addButton->setFixedWidth(32);
-	m_addButton->setToolTip(tr("Add a rhythm track"));
-	m_removeButton = new QPushButton(QStringLiteral("-"), this);
-	m_removeButton->setFixedWidth(32);
-	m_removeButton->setToolTip(tr("Remove the last rhythm track"));
-	buttons->addWidget(m_addButton);
-	buttons->addWidget(m_removeButton);
-	buttons->addStretch(1);
-	right->addLayout(buttons);
+	auto hint = new QLabel(tr("Right-click a rhythm to delete it, or empty space to add one"), this);
+	hint->setWordWrap(true);
+	hint->setEnabled(false); // greyed-out text: a hint, not a control
+	right->addWidget(hint);
 
 	auto scroll = new QScrollArea(this);
 	scroll->setWidgetResizable(true);
@@ -397,8 +394,6 @@ EuclideanRhythmWindow::EuclideanRhythmWindow()
 	body->addLayout(right, 1);
 	root->addLayout(body, 1);
 
-	connect(m_addButton, &QPushButton::clicked, this, &EuclideanRhythmWindow::addRhythm);
-	connect(m_removeButton, &QPushButton::clicked, this, &EuclideanRhythmWindow::removeRhythm);
 	connect(m_previewButton, &QPushButton::toggled, this, &EuclideanRhythmWindow::togglePreview);
 	connect(m_tempo, &QSlider::valueChanged, this, [this](int value)
 	{
@@ -468,7 +463,14 @@ void EuclideanRhythmWindow::addRhythm()
 
 	auto owned = std::make_unique<Row>();
 	Row* r = owned.get();
-	const int index = static_cast<int>(m_rows.size());
+	int index = static_cast<int>(m_rows.size());
+	for (int candidate = 0; candidate < MaxRhythms; ++candidate)
+	{
+		const QColor candidateColor = ringColor(candidate);
+		const bool taken = std::any_of(m_rows.begin(), m_rows.end(),
+			[&candidateColor](const std::unique_ptr<Row>& other) { return other->color == candidateColor; });
+		if (!taken) { index = candidate; break; }
+	}
 	r->color = ringColor(index);
 
 	r->widget = new QFrame(m_rowsHost);
@@ -508,24 +510,68 @@ void EuclideanRhythmWindow::addRhythm()
 	r->widget->show();
 
 	m_rows.push_back(std::move(owned));
-	m_addButton->setEnabled(m_rows.size() < static_cast<std::size_t>(MaxRhythms));
-	m_removeButton->setEnabled(m_rows.size() > 1);
 
 	refreshInstruments();
 	updateCircle();
 }
 
 
-void EuclideanRhythmWindow::removeRhythm()
+void EuclideanRhythmWindow::removeRhythm(Row* row)
 {
 	if (m_rows.size() <= 1) { return; }
 
-	delete m_rows.back()->widget;
-	m_rows.pop_back();
+	const auto it = std::find_if(m_rows.begin(), m_rows.end(),
+		[row](const std::unique_ptr<Row>& other) { return other.get() == row; });
+	if (it == m_rows.end()) { return; }
 
-	m_addButton->setEnabled(true);
-	m_removeButton->setEnabled(m_rows.size() > 1);
+	delete (*it)->widget;
+	m_rows.erase(it);
+
 	updateCircle();
+}
+
+
+void EuclideanRhythmWindow::contextMenuEvent(QContextMenuEvent* event)
+{
+	// Only the rhythm list reacts: right-clicking the circle, the sliders on top or the scroll bar does nothing
+	QWidget* viewport = m_rowsHost->parentWidget();
+	if (!viewport || !viewport->rect().contains(viewport->mapFromGlobal(event->globalPos())))
+	{
+		event->ignore();
+		return;
+	}
+
+	Row* clicked = nullptr;
+	for (const auto& rowPtr : m_rows)
+	{
+		const QWidget* widget = rowPtr->widget;
+		if (widget->rect().contains(widget->mapFromGlobal(event->globalPos())))
+		{
+			clicked = rowPtr.get();
+			break;
+		}
+	}
+
+	QMenu menu(this);
+	QAction* deleteAction = nullptr;
+	QAction* addAction = nullptr;
+	if (clicked)
+	{
+		deleteAction = menu.addAction(tr("Delete rhythm"));
+		deleteAction->setEnabled(m_rows.size() > 1); // the generator always keeps one rhythm
+	}
+	else
+	{
+		addAction = menu.addAction(tr("Add rhythm"));
+		addAction->setEnabled(m_rows.size() < static_cast<std::size_t>(MaxRhythms));
+	}
+
+	const QAction* chosen = menu.exec(event->globalPos());
+	event->accept();
+	if (!chosen) { return; }
+
+	if (chosen == deleteAction) { removeRhythm(clicked); }
+	else if (chosen == addAction) { addRhythm(); }
 }
 
 
