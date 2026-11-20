@@ -28,6 +28,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <memory>
@@ -378,7 +379,7 @@ void TrackOperationsWidget::bounceTrack()
 		progress->deleteLater();
 		renderManager->deleteLater();
 	});
-	connect(renderManager, &QObject::destroyed, [path, trackName, succeeded]()
+	connect(renderManager, &QObject::destroyed, [path, trackName, succeeded, bouncedTrack = QPointer<Track>(track)]()
 	{
 		if (*succeeded && QFileInfo::exists(path))
 		{
@@ -388,6 +389,8 @@ void TrackOperationsWidget::bounceTrack()
 			{
 				clip->setSampleFile(path);
 			}
+			// The bounce now carries the sound, so silence the source (also stops the instrument from using CPU)
+			if (bouncedTrack) { bouncedTrack->setMuted(true); }
 			Engine::getSong()->setModified();
 		}
 		else
