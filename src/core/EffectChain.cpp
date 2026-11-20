@@ -76,13 +76,56 @@ void EffectChain::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 void EffectChain::loadSettings( const QDomElement & _this )
 {
-	clear();
-
 	// TODO This method should probably also lock the audio engine
 
-	m_enabledModel.loadSettings( _this, "enabled" );
-
 	const int plugin_cnt = _this.attribute( "numofeffects" ).toInt();
+
+	// An effect that is already the same plugin as the saved one at the same position is kept
+	// alive and only gets its state restored. Without this, every undo of a track change
+	// closed and reopened every plugin in the chain.
+	std::vector<Effect*> kept;
+	{
+		int index = 0;
+		QDomNode scan = _this.firstChild();
+		while( !scan.isNull() && index < plugin_cnt )
+		{
+			if( scan.isElement() && scan.nodeName() == "effect" )
+			{
+				Effect* candidate = nullptr;
+				if( index < static_cast<int>( m_effects.size() ) )
+				{
+					Effect* existing = m_effects[index];
+					const QDomElement data = scan.toElement();
+					EffectKey savedKey( data.elementsByTagName( "key" ).item( 0 ).toElement() );
+					if( !dynamic_cast<DummyEffect*>( existing )
+						&& existing->descriptor()
+						&& QString::fromUtf8( existing->descriptor()->name ) == data.attribute( "name" )
+						&& existing->key().attributes == savedKey.attributes
+						&& existing->nodeName() == scan.nodeName() )
+					{
+						candidate = existing;
+					}
+				}
+				kept.push_back( candidate );
+				++index;
+			}
+			scan = scan.nextSibling();
+		}
+	}
+
+	// Take the kept effects out of the chain so clear() only deletes the others
+	Engine::audioEngine()->requestChangeInModel();
+	for( Effect* k : kept )
+	{
+		if( !k ) { continue; }
+		auto it = std::find( m_effects.begin(), m_effects.end(), k );
+		if( it != m_effects.end() ) { m_effects.erase( it ); }
+	}
+	Engine::audioEngine()->doneChangeInModel();
+
+	clear();
+
+	m_enabledModel.loadSettings( _this, "enabled" );
 
 	QDomNode node = _this.firstChild();
 	int fx_loaded = 0;
@@ -92,19 +135,27 @@ void EffectChain::loadSettings( const QDomElement & _this )
 		{
 			QDomElement effectData = node.toElement();
 
-			const QString name = effectData.attribute( "name" );
-			EffectKey key( effectData.elementsByTagName( "key" ).item( 0 ).toElement() );
-
-			Effect* e = Effect::instantiate( name.toUtf8(), this, &key );
-
-			if( e != nullptr && e->isOkay() && e->nodeName() == node.nodeName() )
+			Effect* e = ( fx_loaded < static_cast<int>( kept.size() ) ) ? kept[fx_loaded] : nullptr;
+			if( e != nullptr )
 			{
 				e->restoreState( effectData );
 			}
 			else
 			{
-				delete e;
-				e = new DummyEffect( parentModel(), effectData );
+				const QString name = effectData.attribute( "name" );
+				EffectKey key( effectData.elementsByTagName( "key" ).item( 0 ).toElement() );
+
+				e = Effect::instantiate( name.toUtf8(), this, &key );
+
+				if( e != nullptr && e->isOkay() && e->nodeName() == node.nodeName() )
+				{
+					e->restoreState( effectData );
+				}
+				else
+				{
+					delete e;
+					e = new DummyEffect( parentModel(), effectData );
+				}
 			}
 
 			m_effects.push_back( e );
