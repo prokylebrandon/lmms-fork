@@ -129,9 +129,9 @@ public:
 			return;
 		}
 		if ( embedMethod() != "none" ) {
-			m_pluginSubWindow.reset(new gui::vstSubWin( gui::getGUI()->mainWindow()->workspace() ));
-			VstPlugin::createUI( m_pluginSubWindow.get() );
-			m_pluginSubWindow->setWidget(pluginWidget());
+			auto newSubWindow = std::make_unique<gui::vstSubWin>(gui::getGUI()->mainWindow()->workspace());
+			VstPlugin::createUI( newSubWindow.get() );
+			// no editor widget was created: do not keep an empty gray sub window
 		} else {
 			VstPlugin::createUI( nullptr );
 		}
