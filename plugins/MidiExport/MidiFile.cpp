@@ -186,6 +186,17 @@ void MidiFile::Track::addColor(std::uint8_t red, std::uint8_t green, std::uint8_
 	addEvent({.type = Event::Color, .red = red, .green = green, .blue = blue}, time);
 }
 
+void MidiFile::Track::addPitchBend(std::uint16_t bend, double realTime)
+{
+	const auto time = static_cast<tick_t>(realTime * TicksPerBeat);
+	addEvent({.type = Event::PitchBend, .bend = bend}, time);
+}
+
+void MidiFile::Track::addPitchBendRange(std::uint8_t semitones, tick_t time)
+{
+	addEvent({.type = Event::PitchBendRange, .bendRange = semitones}, time);
+}
+
 void MidiFile::Track::writeToBuffer()
 {
 	// Chunk ID
@@ -285,6 +296,22 @@ void MidiFile::Track::writeSingleEventToBuffer(Event& event)
 		{
 			// Program change
 			writeBytes({static_cast<std::uint8_t>(0xC0 | m_channel), event.patch.program});
+			break;
+		}
+		case MidiFile::Event::PitchBend:
+		{
+			// Pitch bend: status 0xE0, then the 14-bit value as two 7-bit halves (low first)
+			writeBytes({static_cast<std::uint8_t>(0xE0 | m_channel),
+				static_cast<std::uint8_t>(event.bend & 0x7F), static_cast<std::uint8_t>((event.bend >> 7) & 0x7F)});
+			break;
+		}
+		case MidiFile::Event::PitchBendRange:
+		{
+			// RPN 0 (pitch bend sensitivity): select it, enter semitones and cents, then deselect (RPN null).
+			// Every message after the first needs its own delta time, which is 0 here.
+			const auto cc = static_cast<std::uint8_t>(0xB0 | m_channel);
+			writeBytes({cc, 101, 0, 0x00, cc, 100, 0, 0x00, cc, 6, event.bendRange, 0x00, cc, 38, 0,
+				0x00, cc, 101, 127, 0x00, cc, 100, 127});
 			break;
 		}
 		case MidiFile::Event::Color:

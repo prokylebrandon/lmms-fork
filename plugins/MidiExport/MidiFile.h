@@ -130,7 +130,7 @@ private:
 		//! Possible event types, ordered from most important to least important
 		enum class Type
 		{
-			NoteOn, NoteOff, Tempo, BankSelectMSB, BankSelectLSB, ProgramChange, TrackName, Color
+			NoteOn, NoteOff, Tempo, BankSelectMSB, BankSelectLSB, ProgramChange, TrackName, Color, PitchBend, PitchBendRange
 		};
 		using enum Type;
 
@@ -172,6 +172,12 @@ private:
 		std::uint8_t green = 0;
 		std::uint8_t blue = 0;
 
+		//! Value (0-16383, 8192 is centre) of a PitchBend event
+		std::uint16_t bend = 0;
+
+		//! Bend range in semitones announced by a PitchBendRange event
+		std::uint8_t bendRange = 0;
+
 		//! @brief Comparison operator
 		//! Events are sorted by their time (or, in case of tie, type priority)
 		bool operator<(const Event& b) const noexcept
@@ -207,6 +213,12 @@ public:
 
 		//! Add a track color (sequencer-specific meta event, ignored by players)
 		void addColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue, tick_t time);
+
+		//! Add a pitch bend message (0-16383, 8192 is centre) at a time given in beats
+		void addPitchBend(std::uint16_t bend, double realTime);
+
+		//! Select the pitch bend range (in semitones) that the following bend messages are relative to
+		void addPitchBendRange(std::uint8_t semitones, tick_t time);
 
 		//! Write MIDI track to buffer
 		void writeToBuffer();

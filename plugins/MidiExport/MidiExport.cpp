@@ -28,8 +28,11 @@
 #include "MidiExport.h"
 
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <stack>
 
+#include "AutomationClip.h"
 #include "Instrument.h"
 #include "DataFile.h"
 #include "InstrumentTrack.h"
@@ -199,6 +202,83 @@ bool MidiExport::tryExport(const TrackContainer::TrackList& tracks,
 	return true;
 }
 
+//! Writes the Pitch knob of an instrument track as pitch bend messages: its own value when it is not automated,
+//! or the curves of all automation clips that control it.
+static void writePitchBends(InstrumentTrack& instTrack, MidiFile::Track& midiTrack)
+{
+	constexpr int SampleSpacing = 4;  // LMMS ticks between bend messages on a curve (48 ticks make a beat)
+	constexpr std::uint16_t CentreBend = 8192;
+
+	FloatModel* pitchModel = instTrack.pitchModel();
+	const float maxPitch = pitchModel->maxValue();
+	if (maxPitch <= 0.0f) { return; }
+
+	// LMMS maps the knob (in cents) onto the whole bend range, so a full bend equals the pitch range in semitones
+	const auto toBend = [maxPitch](float value)
+	{
+		const long bend = std::lround(8192.0f + value / maxPitch * 8192.0f);
+		return static_cast<std::uint16_t>(std::clamp(bend, 0L, 16383L));
+	};
+
+	// tick -> bend. The map keeps the messages sorted and leaves one message per tick.
+	std::map<tick_t, std::uint16_t> bends;
+
+	bool automated = false;
+	const auto clips = AutomationClip::clipsForModel(pitchModel);
+	for (AutomationClip* clip : clips)
+	{
+		if (!clip->hasAutomation() || clip->isMuted()) { continue; }
+		automated = true;
+
+		const auto start = static_cast<tick_t>(clip->startPosition());
+		const auto offset = static_cast<tick_t>(clip->startTimeOffset());
+		const auto end = start + static_cast<tick_t>(clip->length());
+		const auto& nodes = clip->getTimeMap();
+
+		const auto addAt = [&](int relative)
+		{
+			const tick_t absolute = start + relative - offset;
+			if (absolute < start || absolute > end) { return; }
+			bends[absolute] = toBend(clip->valueAt(TimePos(relative)));
+		};
+
+		// Both sides of every node (so jumps come out right), plus regular samples in between for the curves
+		for (auto it = nodes.cbegin(); it != nodes.cend(); ++it)
+		{
+			addAt(it.key());
+			addAt(it.key() + 1);
+		}
+		for (int relative = nodes.firstKey(); relative < nodes.lastKey(); relative += SampleSpacing)
+		{
+			addAt(relative);
+		}
+	}
+
+	if (!automated)
+	{
+		if (pitchModel->value() != 0.0f) { bends[0] = toBend(pitchModel->value()); }
+	}
+	else if (!bends.empty() && bends.begin()->first > 0)
+	{
+		// Until the first clip starts LMMS keeps the knob's own value, which is not known here: assume centre
+		bends.emplace(0, CentreBend);
+	}
+
+	std::uint16_t current = CentreBend; // a MIDI channel starts centred
+	bool rangeWritten = false;
+	for (const auto& [tick, bend] : bends)
+	{
+		if (bend == current) { continue; }
+		if (!rangeWritten)
+		{
+			midiTrack.addPitchBendRange(static_cast<std::uint8_t>(std::clamp(instTrack.pitchRangeModel()->value(), 1, 60)), 0);
+			rangeWritten = true;
+		}
+		midiTrack.addPitchBend(bend, tick / 48.0);
+		current = bend;
+	}
+}
+
 void MidiExport::processTrack(Track& track, MidiFile::Track& midiTrack,
 	int tempo, int masterPitch, bool isPattern)
 {
@@ -237,6 +317,8 @@ void MidiExport::processTrack(Track& track, MidiFile::Track& midiTrack,
 			static_cast<std::uint8_t>(color->green()), static_cast<std::uint8_t>(color->blue()), 0);
 	}
 	midiTrack.addPatch(patch, 0);
+
+	writePitchBends(instTrack, midiTrack);
 
 	// ---- Instrument track ---- //
 	QDomNode trackNode = root.firstChildElement("instrumenttrack");
