@@ -56,6 +56,7 @@ SET(LMMS_SRCS
 	gui/editors/PianoRoll.cpp
 	gui/editors/PositionLine.cpp
 	gui/editors/Rubberband.cpp
+	gui/editors/EuclideanRhythmWindow.cpp
 	gui/editors/SongEditor.cpp
 	gui/editors/StepRecorderWidget.cpp
 	gui/editors/TimeLineWidget.cpp

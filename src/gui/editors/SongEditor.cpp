@@ -44,6 +44,7 @@
 #include "CPULoadWidget.h"
 #include "DeprecationHelper.h"
 #include "embed.h"
+#include "EuclideanRhythmWindow.h"
 #include "GuiApplication.h"
 #include "LcdSpinBox.h"
 #include "MainWindow.h"
@@ -1025,6 +1026,9 @@ SongEditorWindow::SongEditorWindow(Song* song) :
 	snapToolBar->addWidget( m_snappingComboBox );
 	snapToolBar->addSeparator();
 	snapToolBar->addAction( m_setProportionalSnapAction );
+
+	auto euclideanAction = snapToolBar->addAction(embed::getIconPixmap("gear"), tr("Euclidean rhythm generator"));
+	connect(euclideanAction, &QAction::triggered, this, []() { EuclideanRhythmWindow::showWindow(); });
 
 	snapToolBar->addSeparator();
 	snapToolBar->addWidget( m_snapSizeLabel );
