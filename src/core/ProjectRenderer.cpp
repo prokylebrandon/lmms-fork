@@ -186,7 +186,7 @@ void ProjectRenderer::run()
 		const auto sampleRate = static_cast<std::size_t>(m_fileDev->getOutputSettings().getSampleRate());
 		const auto maxFrames = 30 * sampleRate;
 		const auto quietFramesNeeded = sampleRate / 2;
-		constexpr auto silenceThreshold = 0.0001f; // about -80 dBFS
+		constexpr auto silenceThreshold = 0.001f; // about -60 dBFS, practically inaudible
 
 		auto renderedFrames = std::size_t{0};
 		auto quietFrames = std::size_t{0};
