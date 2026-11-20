@@ -22,6 +22,7 @@
  *
  */
 #include "InstrumentTrack.h"
+#include "ProjectJournal.h"
 
 #include <algorithm>
 #include <limits>
@@ -903,7 +904,11 @@ void InstrumentTrack::loadTrackSpecificSettings( const QDomElement & thisElement
 {
 	// don't delete instrument in preview mode if it's the same
 	// we can't do this for other situations due to some issues with linked models
-	bool reuseInstrument = m_previewMode && m_instrument && m_instrument->nodeName() == getSavedInstrumentName(thisElement);
+	// An undo/redo of a VST instrument keeps the running plugin, because reloading it is slow.
+	const auto* journal = Engine::projectJournal();
+	const bool journalRestore = journal != nullptr && journal->isRestoring();
+	bool reuseInstrument = m_instrument && m_instrument->nodeName() == getSavedInstrumentName(thisElement)
+		&& (m_previewMode || (journalRestore && m_instrument->nodeName() == "vestige"));
 	// remove the InstrumentPlayHandle if and only if we need to delete the instrument
 	silenceAllNotes(!reuseInstrument);
 
