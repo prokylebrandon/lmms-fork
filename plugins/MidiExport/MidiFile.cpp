@@ -181,6 +181,11 @@ void MidiFile::Track::addName(std::string name, tick_t time)
 	addEvent({.type = Event::TrackName, .trackName = std::move(name)}, time);
 }
 
+void MidiFile::Track::addColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue, tick_t time)
+{
+	addEvent({.type = Event::Color, .red = red, .green = green, .blue = blue}, time);
+}
+
 void MidiFile::Track::writeToBuffer()
 {
 	// Chunk ID
@@ -227,8 +232,7 @@ void MidiFile::Track::writeEventsToBuffer()
 		// Write event to buffer
 		writeSingleEventToBuffer(event);
 
-		// In case of exceding maximum size, go away
-		if (m_buffer.size() >= BufferSize) { break; }
+		// No size cap here: the buffer grows as needed, and stopping early would silently drop the rest of the track
 	}
 }
 
@@ -281,6 +285,13 @@ void MidiFile::Track::writeSingleEventToBuffer(Event& event)
 		{
 			// Program change
 			writeBytes({static_cast<std::uint8_t>(0xC0 | m_channel), event.patch.program});
+			break;
+		}
+		case MidiFile::Event::Color:
+		{
+			// Sequencer-specific meta event: 0x7D is the manufacturer ID reserved for non-commercial use,
+			// followed by an "LMMS" tag and the RGB value. Players ignore it, readers that know the tag can use it.
+			writeBytes({0xFF, 0x7F, 0x08, 0x7D, 'L', 'M', 'M', 'S', event.red, event.green, event.blue});
 			break;
 		}
 		case MidiFile::Event::TrackName:

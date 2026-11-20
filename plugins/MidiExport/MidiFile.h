@@ -130,7 +130,7 @@ private:
 		//! Possible event types, ordered from most important to least important
 		enum class Type
 		{
-			NoteOn, NoteOff, Tempo, BankSelectMSB, BankSelectLSB, ProgramChange, TrackName
+			NoteOn, NoteOff, Tempo, BankSelectMSB, BankSelectLSB, ProgramChange, TrackName, Color
 		};
 		using enum Type;
 
@@ -167,6 +167,11 @@ private:
 		// (too much trouble putting it inside union...)
 		std::string trackName;
 
+		//! Track color of a Color event
+		std::uint8_t red = 0;
+		std::uint8_t green = 0;
+		std::uint8_t blue = 0;
+
 		//! @brief Comparison operator
 		//! Events are sorted by their time (or, in case of tie, type priority)
 		bool operator<(const Event& b) const noexcept
@@ -199,6 +204,9 @@ public:
 
 		//! Add a track name event
 		void addName(std::string name, tick_t time);
+
+		//! Add a track color (sequencer-specific meta event, ignored by players)
+		void addColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue, tick_t time);
 
 		//! Write MIDI track to buffer
 		void writeToBuffer();

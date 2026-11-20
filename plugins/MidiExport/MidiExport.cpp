@@ -229,6 +229,13 @@ void MidiExport::processTrack(Track& track, MidiFile::Track& midiTrack,
 	// Add info about tempo, track name, bank select, and program change
 	midiTrack.addTempo(tempo, 0);
 	midiTrack.addName(track.name().toStdString(), 0);
+
+	// The MIDI standard has no track color, so it is stored as a sequencer-specific meta event
+	if (const auto& color = track.color(); color.has_value())
+	{
+		midiTrack.addColor(static_cast<std::uint8_t>(color->red()),
+			static_cast<std::uint8_t>(color->green()), static_cast<std::uint8_t>(color->blue()), 0);
+	}
 	midiTrack.addPatch(patch, 0);
 
 	// ---- Instrument track ---- //
