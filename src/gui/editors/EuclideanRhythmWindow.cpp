@@ -24,6 +24,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QCursor>
 #include <QDomElement>
 #include <QFrame>
 #include <QGridLayout>
@@ -38,9 +39,12 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <iterator>
+#include <utility>
 
 #include "DataFile.h"
 #include "embed.h"
@@ -274,7 +278,7 @@ protected:
 	{
 		if (e->button() == Qt::LeftButton)
 		{
-			m_pressPos = e->position().toPoint();
+			m_pressPos = mapFromGlobal(QCursor::pos());
 			m_pressed = true;
 		}
 	}
@@ -282,7 +286,7 @@ protected:
 	void mouseMoveEvent(QMouseEvent* e) override
 	{
 		if (!m_pressed || !(e->buttons() & Qt::LeftButton)) { return; }
-		if ((e->position().toPoint() - m_pressPos).manhattanLength() < QApplication::startDragDistance()) { return; }
+		if ((mapFromGlobal(QCursor::pos()) - m_pressPos).manhattanLength() < QApplication::startDragDistance()) { return; }
 		m_pressed = false;
 
 		const QString data = m_payload();
