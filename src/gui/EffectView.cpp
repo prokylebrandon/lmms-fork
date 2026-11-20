@@ -25,6 +25,7 @@
 
 #include <QGraphicsOpacityEffect>
 #include <QLayout>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QPainter>
@@ -77,24 +78,7 @@ EffectView::EffectView( Effect * _model, QWidget * _parent ) :
 
 	setModel( _model );
 
-	if( effect()->controls()->controlCount() > 0 )
-	{
-		auto ctls_btn = new QPushButton(tr("Controls"), this);
-		QFont f = ctls_btn->font();
-		ctls_btn->setFont(adjustedToPixelSize(f, DEFAULT_FONT_SIZE));
-		ctls_btn->setGeometry( 150, 14, 50, 20 );
-		ctls_btn->setFocusPolicy(Qt::NoFocus);
-		connect( ctls_btn, SIGNAL(clicked()),
-					this, SLOT(editControls()));
-
-		m_controlView = effect()->controls()->createView();
-		if (m_controlView)
-		{
-			m_subWindow = getGUI()->mainWindow()->addWindowedWidget(m_controlView);
-			m_subWindow->setWindowFlag(Qt::WindowMaximizeButtonHint, false);
-			m_subWindow->hide();
-		}
-	}
+	buildControls();
 
 	m_opacityEffect = new QGraphicsOpacityEffect(this);
 	m_opacityEffect->setOpacity(1);
@@ -131,6 +115,64 @@ void EffectView::editControls()
 			effect()->controls()->setViewVisible( false );
 		}
 	}
+}
+
+
+
+
+void EffectView::buildControls()
+{
+	if (effect()->controls()->controlCount() > 0)
+	{
+		auto ctls_btn = new QPushButton(tr("Controls"), this);
+		QFont f = ctls_btn->font();
+		ctls_btn->setFont(adjustedToPixelSize(f, DEFAULT_FONT_SIZE));
+		ctls_btn->setGeometry(150, 14, 50, 20);
+		ctls_btn->setFocusPolicy(Qt::NoFocus);
+		connect(ctls_btn, SIGNAL(clicked()), this, SLOT(editControls()));
+		ctls_btn->show();
+
+		m_controlView = effect()->controls()->createView();
+		if (m_controlView)
+		{
+			m_subWindow = getGUI()->mainWindow()->addWindowedWidget(m_controlView);
+			m_subWindow->setWindowFlag(Qt::WindowMaximizeButtonHint, false);
+			m_subWindow->hide();
+		}
+	}
+	else if (effect()->controls()->canLocate())
+	{
+		// The plugin is missing: offer a way to find it again and restore its saved settings
+		m_locateButton = new QPushButton(tr("Locate"), this);
+		QFont f = m_locateButton->font();
+		m_locateButton->setFont(adjustedToPixelSize(f, DEFAULT_FONT_SIZE));
+		m_locateButton->setGeometry(150, 14, 50, 20);
+		m_locateButton->setFocusPolicy(Qt::NoFocus);
+		m_locateButton->setToolTip(tr("Search the VST3 plugins directory for this plugin and restore its saved settings"));
+		connect(m_locateButton, &QPushButton::clicked, this, &EffectView::locatePlugin);
+		m_locateButton->show();
+	}
+}
+
+
+
+
+void EffectView::locatePlugin()
+{
+	if (!effect()->controls()->locate())
+	{
+		QMessageBox::information(this, tr("Locate"),
+			tr("The plugin could not be found or loaded. Make sure it is inside the VST3 plugins directory (Settings > Paths) and try again."));
+		return;
+	}
+
+	if (m_locateButton)
+	{
+		m_locateButton->hide();
+		m_locateButton->deleteLater();
+		m_locateButton = nullptr;
+	}
+	buildControls();
 }
 
 

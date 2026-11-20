@@ -74,6 +74,7 @@ public slots:
 	void moveDown();
 	void deletePlugin();
 	void corruptStateUpdate();
+	void locatePlugin();
 
 signals:
 	void movedUp(EffectView* view);
@@ -92,6 +93,9 @@ private:
 	Knob * m_wetDry;
 	TempoSyncKnob * m_autoQuit;
 	QMdiSubWindow * m_subWindow;
+	QPushButton * m_locateButton = nullptr;
+
+	void buildControls();
 	EffectControlDialog * m_controlView;
 	
 	bool m_dragging;

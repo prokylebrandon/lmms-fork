@@ -56,6 +56,11 @@ public:
 	virtual int controlCount() = 0;
 	virtual gui::EffectControlDialog * createView() = 0;
 
+	//! True while this effect's plugin is missing, so the view offers a Locate button
+	virtual bool canLocate() const { return false; }
+	//! Searches for the missing plugin again; true once it is loaded
+	virtual bool locate() { return false; }
+
 
 	void setViewVisible( bool _visible )
 	{

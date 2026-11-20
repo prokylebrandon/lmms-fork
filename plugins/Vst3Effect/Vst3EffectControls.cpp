@@ -423,6 +423,30 @@ void Vst3EffectControls::loadSettings(const QDomElement& elem)
 	applySavedElement(elem);
 }
 
+bool Vst3EffectControls::canLocate() const
+{
+	return m_effect && !m_effect->pluginInstance();
+}
+
+bool Vst3EffectControls::locate()
+{
+	return m_effect && m_effect->locate();
+}
+
+void Vst3EffectControls::restoreRetained()
+{
+	if (m_retainedXml.isEmpty() || !m_effect->pluginInstance()) { return; }
+
+	QDomDocument retained;
+	if (!retained.setContent(m_retainedXml)) { return; }
+
+	const QDomElement root = retained.documentElement();
+	if (root.attribute("version", "0").toInt() > kSaveVersion) { return; } // newer layout: leave it untouched
+
+	applySavedElement(root);
+	m_retainedXml.clear();
+}
+
 gui::EffectControlDialog* Vst3EffectControls::createView()
 {
 	return new gui::Vst3EffectControlDialog(this);

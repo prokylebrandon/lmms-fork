@@ -59,13 +59,39 @@ Plugin::Descriptor PLUGIN_EXPORT vst3effect_plugin_descriptor =
 }
 
 
+//! Looks for the bundle holding the effect class `uid` in the configured VST3 folder
+//! and the standard VST3 folders. Empty if it is nowhere to be found.
+static QString findBundleForClass(const QString& uid)
+{
+	if (uid.isEmpty()) { return QString(); }
+
+	Vst3SubPluginFeatures features(Plugin::Type::Effect);
+	Plugin::Descriptor::SubPluginFeatures::KeyList keys;
+	features.listSubPluginKeys(&vst3effect_plugin_descriptor, keys);
+	for (const auto& k : keys)
+	{
+		if (k.attributes.value("uid") == uid) { return k.attributes.value("file"); }
+	}
+	return QString();
+}
+
+
 Vst3Effect::Vst3Effect(Model* parent, const Descriptor::SubPluginFeatures::Key* key) :
 	Effect(&vst3effect_plugin_descriptor, parent, key),
 	m_pluginMutex(),
 	m_key(*key),
 	m_controls(this)
 {
-	const bool loaded = openPlugin(m_key.attributes["file"], m_key.attributes["uid"]);
+	const QString uid = m_key.attributes["uid"];
+	bool loaded = openPlugin(m_key.attributes["file"], uid, false);
+	if (!loaded && m_classMissing)
+	{
+		// The saved location is gone (or no longer holds this class): look for the plugin
+		// elsewhere. Only runs for a missing plugin, never for a normal load.
+		const QString found = findBundleForClass(uid);
+		// Not found: this second call reports the original "not found" error to the user
+		loaded = openPlugin(found.isEmpty() ? m_key.attributes["file"] : found, uid, true);
+	}
 	if (loaded)
 	{
 		// Task 2 (batch 2): build the per-parameter automatable models now
@@ -98,7 +124,7 @@ Vst3Effect::~Vst3Effect()
 }
 
 
-bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid)
+bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid, bool reportMissing)
 {
 	// Identity is the class UID, never a positional classIndex carried
 	// over between sessions: a bundle whose classes have been reordered
@@ -128,6 +154,12 @@ bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid)
 			className = info.name;
 			break;
 		}
+	}
+
+	m_classMissing = classIndex < 0;
+	if (classIndex < 0 && !reportMissing)
+	{
+		return false;
 	}
 
 	if (classIndex < 0)
@@ -168,6 +200,29 @@ bool Vst3Effect::openPlugin(const QString& bundlePath, const QString& uid)
 	if (m_key.name.isEmpty() && !className.isEmpty()) { m_key.name = className; }
 
 	return true;
+}
+
+
+bool Vst3Effect::locate()
+{
+	if (m_instance) { return true; }
+
+	// Search first, outside the engine lock: this opens every bundle it scans
+	const QString uid = m_key.attributes["uid"];
+	const QString found = findBundleForClass(uid);
+	if (found.isEmpty()) { return false; }
+
+	// The effect is live in the chain: keep the audio thread out while the plugin comes up
+	Engine::audioEngine()->requestChangeInModel();
+	const bool loaded = openPlugin(found, uid, true);
+	if (loaded)
+	{
+		m_controls.buildParameterModels();
+		m_controls.restoreRetained();
+		setDontRun(false);
+	}
+	Engine::audioEngine()->doneChangeInModel();
+	return loaded;
 }
 
 

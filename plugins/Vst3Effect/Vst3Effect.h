@@ -82,6 +82,10 @@ public:
 	//! also be true in that case).
 	Vst3PluginInstance* pluginInstance() const { return m_instance.get(); }
 
+	//! Searches the VST3 folders for this effect's plugin by class UID and, if found,
+	//! loads it and restores the saved settings. Used by the Locate button.
+	bool locate();
+
 	//! Task 3 (batch 2): forwards to Vst3PluginInstance's native editor
 	//! API (createEditor()/attachEditor()/closeEditor()). Mirrors
 	//! PrestigeInstrument's identically-named methods exactly -- see the
@@ -97,7 +101,7 @@ private:
 	//! see Vst3SubPluginFeatures.cpp's ASSUMPTION FLAG comment for the
 	//! Vst3ClassInfo field names this depends on), loads and starts the
 	//! plugin. Returns true iff it is ready to process audio.
-	bool openPlugin(const QString& bundlePath, const QString& uid);
+	bool openPlugin(const QString& bundlePath, const QString& uid, bool reportMissing);
 
 	//! Single teardown funnel -- called from the destructor today, and
 	//! from any future reload/replace path batch 2 adds. Takes
@@ -112,6 +116,8 @@ private:
 
 	std::unique_ptr<Vst3PluginInstance> m_instance;
 	QMutex m_pluginMutex;
+	//! Set by openPlugin(): the class UID was not in the bundle (or the bundle is gone)
+	bool m_classMissing = false;
 	EffectKey m_key;
 
 	Vst3EffectControls m_controls;

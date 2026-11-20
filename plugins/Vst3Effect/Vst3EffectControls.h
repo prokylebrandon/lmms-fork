@@ -87,6 +87,13 @@ public:
 	int controlCount() override { return static_cast<int>(m_parameterModels.size()); }
 	gui::EffectControlDialog* createView() override;
 
+	bool canLocate() const override;
+	bool locate() override;
+
+	//! After a missing plugin has been found and loaded: applies the saved element
+	//! kept by loadSettings() (plugin state + automation), then drops it.
+	void restoreRetained();
+
 	Vst3Effect* vst3Effect() const { return m_effect; }
 
 	//! Read-only view for the control dialog / parameter UI (Task 3).
