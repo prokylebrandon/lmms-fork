@@ -487,7 +487,7 @@ jobs:
             -G Ninja `
             --toolchain C:/vcpkg/scripts/buildsystems/vcpkg.cmake `
             -Wno-error=dev `
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_BUILD_TYPE=Release `
             -DTARGET_UARCH=official `
             -DWANT_QT6=ON `
             -DWANT_VST3=ON `
