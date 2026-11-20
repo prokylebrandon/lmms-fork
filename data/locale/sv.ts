@@ -6637,29 +6637,6 @@ Se till att du har läsrättigheter för filen och mappen som innehåller filen 
     </message>
 </context>
 <context>
-    <name>lmms::gui::CarlaInstrumentView</name>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="626"/>
-        <source>Show GUI</source>
-        <translation>Visa användargränssnitt</translation>
-    </message>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="634"/>
-        <source>Click here to show or hide the graphical user interface (GUI) of Carla.</source>
-        <translation>Klicka här för att visa eller gömma användargränssnittet för Carla.</translation>
-    </message>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="637"/>
-        <source>Params</source>
-        <translation>Parametrar</translation>
-    </message>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="643"/>
-        <source>Available from Carla version 2.1 and up.</source>
-        <translation>Tillgänglig från Carla version 2.1 och senare.</translation>
-    </message>
-</context>
-<context>
     <name>lmms::gui::CarlaParamsView</name>
     <message>
         <location filename="../../plugins/CarlaBase/Carla.cpp" line="758"/>

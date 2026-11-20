@@ -6637,29 +6637,6 @@ Please make sure you have read-permission to the file and the directory containi
     </message>
 </context>
 <context>
-    <name>lmms::gui::CarlaInstrumentView</name>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="626"/>
-        <source>Show GUI</source>
-        <translation>GUI 표시</translation>
-    </message>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="634"/>
-        <source>Click here to show or hide the graphical user interface (GUI) of Carla.</source>
-        <translation>Carla의 그래픽 사용자 인터페이스(GUI)를 표시하거나 숨기려면 여기를 클릭하세요.</translation>
-    </message>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="637"/>
-        <source>Params</source>
-        <translation>매개변수</translation>
-    </message>
-    <message>
-        <location filename="../../plugins/CarlaBase/Carla.cpp" line="643"/>
-        <source>Available from Carla version 2.1 and up.</source>
-        <translation>Carla 버전 2.1 이상부터 사용 가능합니다.</translation>
-    </message>
-</context>
-<context>
     <name>lmms::gui::CarlaParamsView</name>
     <message>
         <location filename="../../plugins/CarlaBase/Carla.cpp" line="758"/>
