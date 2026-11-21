@@ -135,12 +135,6 @@ SubWindow::SubWindow(QWidget* parent, Qt::WindowFlags windowFlags)
 	// OS stacking order instead.
 	setAttribute(Qt::WA_NativeWindow);
 
-	// Make every sub window a real native window. A plugin editor host is a native HWND, and Qt always
-	// stacks native child windows above ordinary (alien) siblings, so other windows dragged over an editor
-	// were painted underneath it, leaving trails and line glitches. Native siblings follow the real
-	// OS stacking order instead.
-	setAttribute(Qt::WA_NativeWindow);
-
 	// Disable the minimize button and make sure that the custom window hint is set
 	setWindowFlags((this->windowFlags() & ~Qt::WindowMinimizeButtonHint) | Qt::CustomizeWindowHint);
 
