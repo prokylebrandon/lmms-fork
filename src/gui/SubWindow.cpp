@@ -205,6 +205,27 @@ void SubWindow::changeEvent( QEvent *event )
 
 void SubWindow::setVisible(bool visible)
 {
+	// Restore a minimized window: Qt's show() is a no-op on an already visible minimized window, so a
+	// minimized editor (e.g. the piano roll) would otherwise never come back when something asks for it.
+	if (visible)
+	{
+		if (isDetached())
+		{
+			auto* w = widget();
+			if (w->isMinimized())
+			{
+				w->setWindowState((w->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+				w->raise();
+				w->activateWindow();
+			}
+		}
+		else if (isMinimized())
+		{
+			showNormal();
+			return;
+		}
+	}
+
 	if (isDetached() || visible)
 	{
 		// When detached, top-level window is the child widget itself. (This is janky and is best changed at some point.)

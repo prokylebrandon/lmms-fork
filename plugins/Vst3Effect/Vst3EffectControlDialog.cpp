@@ -289,6 +289,21 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 	// window, since it needs QEvent::Enter for host itself.
 	host->installEventFilter(new EditorHostCursorFilter(host, window));
 
+#ifdef Q_OS_WIN
+	// Size the host to the plugin's real child window once it is attached and shown, using the host's
+	// actual device pixel ratio at that point, so the editor is never cut off.
+	QMetaObject::invokeMethod(host, [host]()
+	{
+		const HWND child = GetWindow(reinterpret_cast<HWND>(host->winId()), GW_CHILD);
+		RECT r{};
+		if (!child || !GetWindowRect(child, &r) || r.right <= r.left || r.bottom <= r.top) { return; }
+		const QSize actual = toWidgetSize(host, r.right - r.left, r.bottom - r.top);
+		if (actual == host->size()) { return; }
+		host->setFixedSize(actual);
+		if (auto* frame = host->parentWidget()) { frame->adjustSize(); }
+	}, Qt::QueuedConnection);
+#endif
+
 	// Step 3: attach. winId() forces creation of the native HWND. On
 	// Windows we must also set WS_CLIPCHILDREN on the host HWND and
 	// WS_CLIPSIBLINGS on the plugin's own HWND so GDI clips their
