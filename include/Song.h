@@ -25,6 +25,7 @@
 #ifndef LMMS_SONG_H
 #define LMMS_SONG_H
 
+#include <atomic>
 #include <array>
 #include <memory>
 
@@ -439,13 +440,13 @@ private:
 	bool m_modified;
 	bool m_loadOnLaunch;
 
-	volatile bool m_recording;
-	volatile bool m_exporting;
-	volatile bool m_exportLoop;
-	volatile bool m_renderBetweenMarkers;
-	volatile bool m_exportTail;
-	volatile bool m_playing;
-	volatile bool m_paused;
+	std::atomic<bool> m_recording;
+	std::atomic<bool> m_exporting;
+	std::atomic<bool> m_exportLoop;
+	std::atomic<bool> m_renderBetweenMarkers;
+	std::atomic<bool> m_exportTail;
+	std::atomic<bool> m_playing;
+	std::atomic<bool> m_paused;
 
 	bool m_savingProject;
 	bool m_loadingProject;
