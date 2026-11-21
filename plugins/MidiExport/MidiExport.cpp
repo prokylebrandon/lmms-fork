@@ -164,7 +164,7 @@ MidiExport::MidiExport()
 
 bool MidiExport::tryExport(const TrackContainer::TrackList& tracks,
 	const TrackContainer::TrackList& patternStoreTracks,
-	int tempo, int masterPitch, const std::filesystem::path& filePath)
+	const TempoMap& tempoMap, int masterPitch, const std::filesystem::path& filePath)
 {
 	// Count number of instrument (and PatternStore) tracks
 	const auto numTracks = std::ranges::count_if(tracks, [](const Track* t) {
@@ -174,6 +174,19 @@ bool MidiExport::tryExport(const TrackContainer::TrackList& tracks,
 	// Write header info
 	auto file = MidiFile(filePath, numTracks);
 	file.m_header.writeToBuffer();
+
+	// Every track gets the tempo at the start of the song (120 is the MIDI default if there is none)
+	const int tempo = tempoMap.empty() ? 120 : tempoMap.front().bpm;
+
+	// The later tempo changes go in the first track only, where format 1 files keep their tempo map.
+	// This has to happen before the track is processed, because that writes the track to its buffer.
+	if (!file.m_tracks.empty())
+	{
+		for (std::size_t i = 1; i < tempoMap.size(); ++i)
+		{
+			file.m_tracks.front().addTempoChange(tempoMap[i].bpm, tempoMap[i].tick / 48.0);
+		}
+	}
 
 	// Iterate through "normal" tracks
 	std::size_t trackIdx = 0;

@@ -205,6 +205,9 @@ public:
 		//! Add a tempo mark
 		void addTempo(std::uint32_t tempo, tick_t time);
 
+		//! Add a tempo mark at a time given in beats
+		void addTempoChange(std::uint32_t tempo, double realTime);
+
 		//! Add bank select and program change events
 		void addPatch(MidiPatch patch, tick_t time);
 

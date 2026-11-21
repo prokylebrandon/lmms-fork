@@ -118,13 +118,13 @@ public:
 	//! @brief Export tracks from a project to a .mid extension MIDI file
 	//! @param tracks Song tracks
 	//! @param patternStoreTracks PatternStore tracks
-	//! @param tempo Song global tempo
+	//! @param tempoMap Song tempo over time, including tempo automation
 	//! @param masterPitch Song master pitch
 	//! @param filePath The path of the exported file
 	//! @return If operation was successful
 	bool tryExport(const TrackContainer::TrackList& tracks,
 		const TrackContainer::TrackList& patternStoreTracks,
-		int tempo, int masterPitch, const std::filesystem::path& filePath) override;
+		const TempoMap& tempoMap, int masterPitch, const std::filesystem::path& filePath) override;
 
 private:
 	//! Process a given instrument track

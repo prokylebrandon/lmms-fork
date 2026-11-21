@@ -1453,10 +1453,38 @@ void Song::exportProjectMidi(const std::filesystem::path& filePath) const
 	TrackContainer::TrackList const & tracks = this->tracks();
 	TrackContainer::TrackList const & patternStoreTracks = Engine::patternStore()->tracks();
 
+	// The tempo as playback hears it. Playback evaluates the automation clips with automatedValuesAt() and applies the
+	// result to the tempo model, which keeps its own value until a clip takes over, so this does the same.
+	const auto tempoAt = [this](tick_t tick)
+	{
+		const auto values = automatedValuesAt(TimePos{tick});
+		for (auto it = values.constBegin(); it != values.constEnd(); ++it)
+		{
+			if (it.key() != &m_tempoModel) { continue; }
+			const auto bpm = static_cast<int>(std::lround(m_tempoModel.scaledValue(it.value())));
+			return std::clamp(bpm, static_cast<int>(MinTempo), static_cast<int>(MaxTempo));
+		}
+		return static_cast<int>(m_tempoModel.value());
+	};
+
+	// Playback can change the tempo on every tick, so look at every tick and keep the ones where it changes.
+	// Without any automation clip for the tempo there is nothing to look for.
+	ExportFilter::TempoMap tempoMap;
+	tempoMap.push_back({0, tempoAt(0)});
+	if (!AutomationClip::clipsForModel(&m_tempoModel).empty())
+	{
+		const tick_t endTick = length() * ticksPerBar();
+		for (tick_t tick = 1; tick <= endTick; ++tick)
+		{
+			const int bpm = tempoAt(tick);
+			if (bpm != tempoMap.back().bpm) { tempoMap.push_back({tick, bpm}); }
+		}
+	}
+
 	ExportFilter *exf = dynamic_cast<ExportFilter *> (Plugin::instantiate("midiexport", nullptr, nullptr));
 	if (exf)
 	{
-		exf->tryExport(tracks, patternStoreTracks, getTempo(), m_masterPitchModel.value(), filePath);
+		exf->tryExport(tracks, patternStoreTracks, tempoMap, m_masterPitchModel.value(), filePath);
 	}
 	else
 	{

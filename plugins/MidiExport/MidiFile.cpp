@@ -169,6 +169,12 @@ void MidiFile::Track::addTempo(std::uint32_t tempo, tick_t time)
 	addEvent({.type = Event::Tempo, .tempo = tempo}, time);
 }
 
+void MidiFile::Track::addTempoChange(std::uint32_t tempo, double realTime)
+{
+	// Same conversion from beats to MIDI ticks as for notes
+	addTempo(tempo, static_cast<tick_t>(realTime * TicksPerBeat));
+}
+
 void MidiFile::Track::addPatch(MidiPatch patch, tick_t time)
 {
 	addEvent({.type = Event::BankSelectMSB, .patch = patch}, time);

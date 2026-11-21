@@ -27,6 +27,7 @@
 #define LMMS_EXPORT_FILTER_H
 
 #include <filesystem>
+#include <vector>
 
 #include "TrackContainer.h"
 #include "Plugin.h"
@@ -42,16 +43,26 @@ public:
 	ExportFilter( const Descriptor * _descriptor ) : Plugin( _descriptor, nullptr ) {}
 	~ExportFilter() override = default;
 
+	//! A change of the song tempo at a position on the song timeline
+	struct TempoChange
+	{
+		tick_t tick = 0; //!< Position in LMMS ticks
+		int bpm = 0; //!< Tempo in beats per minute from this position on
+	};
+
+	//! The song tempo over time: sorted by tick, one entry per change. The first entry is at tick 0
+	using TempoMap = std::vector<TempoChange>;
+
 	//! @brief Exports the project to a file
 	//! @param tracks Song tracks
 	//! @param patternStoreTracks PatternStore tracks
-	//! @param tempo Song global tempo
+	//! @param tempoMap Song tempo over time, including tempo automation
 	//! @param masterPitch Song master pitch
 	//! @param filePath The path of the exported file
 	//! @return If operation was successful
 	virtual bool tryExport(const TrackContainer::TrackList& tracks,
 		const TrackContainer::TrackList& patternTracks,
-		int tempo, int masterPitch, const std::filesystem::path& filePath) = 0;
+		const TempoMap& tempoMap, int masterPitch, const std::filesystem::path& filePath) = 0;
 
 protected:
 
