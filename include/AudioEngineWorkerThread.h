@@ -116,7 +116,7 @@ private:
 	static QWaitCondition * queueReadyWaitCond;
 	static QList<AudioEngineWorkerThread *> workerThreads;
 
-	volatile bool m_quit;
+	std::atomic<bool> m_quit;
 } ;
 
 } // namespace lmms

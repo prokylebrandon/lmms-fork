@@ -26,6 +26,7 @@
 #ifndef LMMS_AUDIO_BUS_HANDLE_H
 #define LMMS_AUDIO_BUS_HANDLE_H
 
+#include <atomic>
 #include <memory>
 #include <QString>
 #include <QMutex>
@@ -85,7 +86,7 @@ public:
 	bool isCorrupted() const { return m_corrupted.load(std::memory_order_relaxed); }
 
 private:
-	volatile bool m_bufferUsage;
+	std::atomic<bool> m_bufferUsage;
 
 	AudioBuffer m_buffer;
 
