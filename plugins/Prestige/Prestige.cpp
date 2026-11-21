@@ -1493,6 +1493,7 @@ void PrestigeView::openEditorWindow(bool userInitiated)
 	// widget must be a real native window (WA_NativeWindow).
 	auto* host = new QWidget;
 	host->setAttribute(Qt::WA_NativeWindow);
+	host->setAttribute(Qt::WA_DontCreateNativeAncestors);
 	// WA_PaintOnScreen: tell Qt not to use its backing store for this widget.
 	// Without it Qt composites its own backing-store paint over the embedded
 	// native child window on every repaint, producing overdraw artefacts
