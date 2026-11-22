@@ -98,6 +98,8 @@ private:
 
 	QPointer<QWidget> m_editorHost;
 	QPointer<SubWindow> m_editorWindow;
+	//! Scale the user picked from the editor window's menu; 1.0 = untouched.
+	float m_editorScale = 1.0f;
 	QPushButton* m_editorButton = nullptr;
 
 	QLabel* m_infoLabel;

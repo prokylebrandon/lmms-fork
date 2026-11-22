@@ -33,6 +33,7 @@
 #include <public.sdk/source/vst/hosting/module.h>
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/gui/iplugview.h>
+#include <pluginterfaces/gui/iplugviewcontentscalesupport.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivstmessage.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
@@ -1720,6 +1721,82 @@ void Vst3PluginInstance::closeEditor()
         frame->release();
         m_plugFrame = nullptr;
     }
+}
+
+namespace
+{
+
+// Asks the view for IPlugViewContentScaleSupport; the caller releases the
+// result.  The interface is looked up by its literal TUID rather than through
+// IPlugViewContentScaleSupport::iid: like IPlugFrame (see Vst3PlugFrameIid.cpp)
+// that member has no linkable storage in this build, and adding a
+// DEF_CLASS_IID for it is not needed just to call the interface.
+Steinberg::IPlugViewContentScaleSupport* queryContentScaleSupport(Steinberg::IPlugView* view)
+{
+    static const Steinberg::TUID kIid = INLINE_UID(0x65ED9690, 0x8AC44525, 0x8AADEF7A, 0x72EA703F);
+
+    void* obj = nullptr;
+    if (!view || view->queryInterface(kIid, &obj) != Steinberg::kResultOk)
+    {
+        return nullptr;
+    }
+    return static_cast<Steinberg::IPlugViewContentScaleSupport*>(obj);
+}
+
+} // namespace
+
+bool Vst3PluginInstance::editorSupportsContentScale() const
+{
+    if (!m_plugView)
+        return false;
+
+    auto* support = queryContentScaleSupport(cast<Steinberg::IPlugView>(m_plugView));
+    if (!support)
+        return false;
+
+    support->release();
+    return true;
+}
+
+bool Vst3PluginInstance::setEditorContentScale(float factor)
+{
+    if (!m_plugView || !(factor > 0.0f))
+        return false;
+
+    auto* support = queryContentScaleSupport(cast<Steinberg::IPlugView>(m_plugView));
+    if (!support)
+        return false;
+
+    // A view that handles the factor answers kResultTrue and then asks the
+    // host to resize through IPlugFrame::resizeView() (onEditorResizeRequested
+    // below), so there is nothing else to do here.
+    const Steinberg::tresult r = support->setContentScaleFactor(factor);
+    support->release();
+
+    if (r != Steinberg::kResultTrue)
+    {
+        qDebug("Vst3PluginInstance: '%s' editor declined content scale %.2f (tresult=%d)",
+               qPrintable(m_name), static_cast<double>(factor), static_cast<int>(r));
+        return false;
+    }
+    return true;
+}
+
+bool Vst3PluginInstance::editorViewSize(int* widthOut, int* heightOut) const
+{
+    if (!m_plugView)
+        return false;
+
+    Steinberg::ViewRect rect{};
+    if (cast<Steinberg::IPlugView>(m_plugView)->getSize(&rect) != Steinberg::kResultOk
+        || !editorSizeIsSane(rect.getWidth(), rect.getHeight()))
+    {
+        return false;
+    }
+
+    if (widthOut)  *widthOut  = rect.getWidth();
+    if (heightOut) *heightOut = rect.getHeight();
+    return true;
 }
 
 void Vst3PluginInstance::onEditorResizeRequested(int width, int height)

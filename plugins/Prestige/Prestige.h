@@ -245,6 +245,11 @@ public:
 	bool attachEditor(void* nativeParent, QString* error);
 	void closeEditor();
 
+	// Editor content scale (forwarded to Vst3PluginInstance, see its docs).
+	bool editorSupportsContentScale() const;
+	bool setEditorContentScale(float factor);
+	bool editorViewSize(int* width, int* height) const;
+
 signals:
 	/// Emitted (GUI thread) just before the loaded plugin is destroyed, so any
 	/// open editor / parameter window can let go of it first. Parameter
@@ -442,6 +447,8 @@ private:
 	QPointer<PrestigeInstrument> m_pi;
 	QPointer<SubWindow> m_editorWindow;
 	QPointer<QWidget>   m_editorHost;
+	//! Scale the user picked from the editor window's menu; 1.0 = untouched.
+	float               m_editorScale = 1.0f;
 	QPointer<SubWindow> m_paramsWindow;
 	QPointer<Vst3ParameterWindow> m_paramsWidget;
 

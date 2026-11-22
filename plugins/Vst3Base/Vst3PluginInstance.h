@@ -441,6 +441,30 @@ public:
      *  release), then the frame.  Does nothing if no editor exists. */
     void closeEditor();
 
+    /**
+     * True when the open editor view implements IPlugViewContentScaleSupport,
+     * i.e. it can render at a different scale when asked.  False without an
+     * open editor.
+     */
+    bool editorSupportsContentScale() const;
+
+    /**
+     * Tell the open editor view its content scale factor (the display scale
+     * times any scale the user picked; see IPlugViewContentScaleSupport).  A
+     * view that honours it resizes itself and calls IPlugFrame::resizeView(),
+     * which reaches the host through the EditorResizeCallback as usual.
+     * Returns false if there is no editor, the view does not support scaling
+     * or it declined the factor.
+     */
+    bool setEditorContentScale(float factor);
+
+    /**
+     * The open editor view's current size as the plugin reports it
+     * (IPlugView::getSize()), validated to a sane range.  False without an
+     * open editor or when the plugin reports an unusable size.
+     */
+    bool editorViewSize(int* widthOut, int* heightOut) const;
+
     /** True between a successful createEditor() and closeEditor(). */
     bool isEditorOpen() const { return m_plugView != nullptr; }
 

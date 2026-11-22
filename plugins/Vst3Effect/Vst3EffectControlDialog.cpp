@@ -30,12 +30,14 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "GuiApplication.h"
 #include "MainWindow.h"
 #include "SubWindow.h"
 #include "Vst3Effect.h"
+#include "Vst3EditorScale.h"
 #include "Vst3EffectControls.h"
 #include "Vst3ParameterGrid.h"
 
@@ -123,6 +125,46 @@ QSize toWidgetSize(const QWidget* reference, int viewWidth, int viewHeight)
 #else
 	const qreal ratio = reference->devicePixelRatioF();
 	return QSize(qRound(viewWidth / ratio), qRound(viewHeight / ratio));
+#endif
+}
+
+#ifdef Q_OS_WIN
+/// Sizes the host to the plugin's real child window.  The size a plugin
+/// reports before it is attached is not always the size it ends up with (it
+/// can depend on the monitor's DPI, or on state the plugin only reads once it
+/// is attached), and a host smaller than the child cuts the editor off on the
+/// right and bottom.
+void syncHostToPluginWindow(QWidget* host)
+{
+	const HWND child = GetWindow(reinterpret_cast<HWND>(host->winId()), GW_CHILD);
+	RECT r{};
+	if (!child || !GetWindowRect(child, &r) || r.right <= r.left || r.bottom <= r.top) { return; }
+
+	const QSize actual = toWidgetSize(host, r.right - r.left, r.bottom - r.top);
+	if (actual == host->size()) { return; }
+
+	host->setFixedSize(actual);
+	if (auto* frame = host->parentWidget()) { frame->adjustSize(); }
+}
+#endif
+
+/// Plugins often finish sizing their window a moment after attached() or
+/// after a resize request, without telling the host, so the host re-checks the
+/// real size a few times instead of only once.  Nothing is sent to the plugin;
+/// only the host window follows.
+void scheduleHostSync(QPointer<QWidget> host)
+{
+#ifdef Q_OS_WIN
+	if (!host) { return; }
+	for (const int delayMs : {0, 100, 400, 1500})
+	{
+		QTimer::singleShot(delayMs, host.data(), [host]
+		{
+			if (host) { syncHostToPluginWindow(host); }
+		});
+	}
+#else
+	Q_UNUSED(host)
 #endif
 }
 
@@ -249,6 +291,9 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 			// Plugin asked to resize its editor (IPlugFrame::resizeView).
 			if (m_editorHost) { m_editorHost->setFixedSize(toWidgetSize(m_editorHost, w, h)); }
 			if (m_editorWindow) { m_editorWindow->adjustSize(); }
+			// The plugin sizes its own window right after this returns (onSize()), so
+			// look at its real size a moment later.
+			if (m_editorHost) { scheduleHostSync(m_editorHost); }
 		},
 		&error);
 
@@ -280,29 +325,41 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 	SubWindow* window = getGUI()->mainWindow()->addWindowedWidget(host);
 	window->setAttribute(Qt::WA_DeleteOnClose, false);
 	window->setWindowTitle(effect->pluginInstance()->name());
+	// A detached window is the host widget itself, so it needs the title too (it otherwise shows
+	// the application name).
+	host->setWindowTitle(effect->pluginInstance()->name());
 
 	m_editorHost = host;
 	m_editorWindow = window;
+
+	// Right-click on the window's title bar or frame: scale the editor down (plugins that support it).
+	vst3editor::EditorScaler::Hooks scaleHooks;
+	auto instance = [this]
+	{
+		Vst3Effect* e = m_controls != nullptr ? m_controls->vst3Effect() : nullptr;
+		return e ? e->pluginInstance() : nullptr;
+	};
+	scaleHooks.supported = [instance] { auto* i = instance(); return i && i->editorSupportsContentScale(); };
+	scaleHooks.setFactor = [instance](float factor) { auto* i = instance(); return i && i->setEditorContentScale(factor); };
+	scaleHooks.viewSize = [instance](int* w, int* h) { auto* i = instance(); return i && i->editorViewSize(w, h); };
+	scaleHooks.toWidget = [hostRef = QPointer<QWidget>(host)](int w, int h)
+	{
+		return hostRef ? toWidgetSize(hostRef, w, h) : QSize(w, h);
+	};
+	scaleHooks.remember = [this](float scale) { m_editorScale = scale; };
+	scaleHooks.resync = [hostRef = QPointer<QWidget>(host)] { scheduleHostSync(hostRef); };
+	auto* scaler = new vst3editor::EditorScaler(window, host, window, m_editorScale, std::move(scaleHooks));
+	window->installEventFilter(scaler);
 
 	// See EditorHostCursorFilter's comment: host is a native HWND sitting
 	// right at the SubWindow's top resize margin. Installed on host, not
 	// window, since it needs QEvent::Enter for host itself.
 	host->installEventFilter(new EditorHostCursorFilter(host, window));
 
-#ifdef Q_OS_WIN
 	// Size the host to the plugin's real child window once it is attached and shown, using the host's
-	// actual device pixel ratio at that point, so the editor is never cut off.
-	QMetaObject::invokeMethod(host, [host]()
-	{
-		const HWND child = GetWindow(reinterpret_cast<HWND>(host->winId()), GW_CHILD);
-		RECT r{};
-		if (!child || !GetWindowRect(child, &r) || r.right <= r.left || r.bottom <= r.top) { return; }
-		const QSize actual = toWidgetSize(host, r.right - r.left, r.bottom - r.top);
-		if (actual == host->size()) { return; }
-		host->setFixedSize(actual);
-		if (auto* frame = host->parentWidget()) { frame->adjustSize(); }
-	}, Qt::QueuedConnection);
-#endif
+	// actual device pixel ratio at that point, so the editor is never cut off. Re-checked a few times,
+	// since plugins can resize themselves a little after attaching.
+	scheduleHostSync(host);
 
 	// Step 3: attach. winId() forces creation of the native HWND. On
 	// Windows we must also set WS_CLIPCHILDREN on the host HWND and
@@ -326,6 +383,10 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 		}
 		return;
 	}
+
+	// Re-apply the scale the user picked earlier (nothing happens at 100%). After attach, so the view
+	// is fully set up when it is asked to resize.
+	scaler->applyInitial();
 
 	// If the user closes the window with its own close button, detach the
 	// plugin view first.
