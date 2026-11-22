@@ -253,6 +253,22 @@ m_minimizeInProgress = false;
 		// When attached, visibility of the actual window is controlled by SubWindow.
 		// Nevertheless, the subwindow contents still need to be visible, which is addressed above.
 		QMdiSubWindow::setVisible(visible);
+}
+
+// Opening a window brings it to the front, whether it was hidden, minimized or already shown behind other
+// windows. The show that follows showMinimized() is not an open request, so it is skipped.
+if (visible && !minimizing)
+{
+if (isDetached())
+{
+widget()->raise();
+widget()->activateWindow();
+}
+else
+{
+raise();
+if (auto* area = mdiArea()) { area->setActiveSubWindow(this); }
+}
 	}
 }
 
