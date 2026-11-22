@@ -140,6 +140,8 @@ private:
 	QGraphicsDropShadowEffect * m_shadow;
 	bool m_hasFocus;
 	bool m_isDetachable;
+//! Set while QWidget::showMinimized() runs, see setVisible().
+bool m_minimizeInProgress = false;
 	QTimer* m_resizeCursorTimer;
 
 	//! @brief Stores the given text into the given label.

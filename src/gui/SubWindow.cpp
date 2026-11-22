@@ -194,7 +194,19 @@ void SubWindow::changeEvent( QEvent *event )
 {
 	QMdiSubWindow::changeEvent( event );
 
-	if( event->type() == QEvent::WindowTitleChange )
+	if (event->type() == QEvent::WindowStateChange)
+{
+// QWidget::showMinimized() sets the minimized state and then calls setVisible(true). Remember that, so
+// setVisible() can tell it apart from a request to show the window and doesn't undo the minimize.
+const auto oldState = static_cast<QWindowStateChangeEvent*>(event)->oldState();
+if (isMinimized() && !(oldState & Qt::WindowMinimized))
+{
+m_minimizeInProgress = true;
+QTimer::singleShot(0, this, [this] { m_minimizeInProgress = false; });
+}
+}
+
+if( event->type() == QEvent::WindowTitleChange )
 	{
 		adjustTitleBar();
 	}
@@ -205,9 +217,13 @@ void SubWindow::changeEvent( QEvent *event )
 
 void SubWindow::setVisible(bool visible)
 {
-	// Restore a minimized window: Qt's show() is a no-op on an already visible minimized window, so a
+	// QWidget::showMinimized() ends up here too (see changeEvent()); the restore below must not undo it.
+const bool minimizing = m_minimizeInProgress;
+m_minimizeInProgress = false;
+
+// Restore a minimized window: Qt's show() is a no-op on an already visible minimized window, so a
 	// minimized editor (e.g. the piano roll) would otherwise never come back when something asks for it.
-	if (visible)
+	if (visible && !minimizing)
 	{
 		if (isDetached())
 		{
