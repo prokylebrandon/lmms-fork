@@ -100,6 +100,9 @@ private:
 	QPointer<SubWindow> m_editorWindow;
 	//! Scale the user picked from the editor window's menu; 1.0 = untouched.
 	float m_editorScale = 1.0f;
+	//! Where the user last left the editor window (attached, this session).
+	QPoint m_editorPos;
+	bool m_editorPosValid = false;
 	QPushButton* m_editorButton = nullptr;
 
 	QLabel* m_infoLabel;

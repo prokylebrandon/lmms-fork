@@ -145,6 +145,8 @@ void syncHostToPluginWindow(QWidget* host)
 
 	host->setFixedSize(actual);
 	if (auto* frame = host->parentWidget()) { frame->adjustSize(); }
+	// The window just changed size: make sure it still fits the workspace (a no-op when detached).
+	vst3editor::keepOnScreen(qobject_cast<SubWindow*>(host->parentWidget()));
 }
 #endif
 
@@ -254,6 +256,14 @@ void Vst3EffectControlDialog::toggleEditor()
 {
 	if (m_editorWindow)
 	{
+		// A minimized editor still counts as open but is out of sight: the button brings it back
+		// instead of closing it.
+		if (vst3editor::isEditorMinimized(m_editorWindow, m_editorHost))
+		{
+			m_editorWindow->show();
+			m_editorWindow->raise();
+			return;
+		}
 		closeEditorWindow();
 	}
 	else
@@ -291,6 +301,7 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 			// Plugin asked to resize its editor (IPlugFrame::resizeView).
 			if (m_editorHost) { m_editorHost->setFixedSize(toWidgetSize(m_editorHost, w, h)); }
 			if (m_editorWindow) { m_editorWindow->adjustSize(); }
+			vst3editor::keepOnScreen(m_editorWindow);
 			// The plugin sizes its own window right after this returns (onSize()), so
 			// look at its real size a moment later.
 			if (m_editorHost) { scheduleHostSync(m_editorHost); }
@@ -312,6 +323,9 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 	// the widget must be a real native window (WA_NativeWindow).
 	auto* host = new QWidget;
 	host->setAttribute(Qt::WA_NativeWindow);
+	// Same as PrestigeView: without this Qt makes every ancestor (the SubWindow, the MDI viewport) a native
+	// window too, which is what paints white/black rectangles over other windows.
+	host->setAttribute(Qt::WA_DontCreateNativeAncestors);
 	// WA_PaintOnScreen: tell Qt not to use its backing store for this
 	// widget, avoiding overdraw artefacts against the embedded native
 	// child window on repaint.
@@ -351,6 +365,11 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 	auto* scaler = new vst3editor::EditorScaler(window, host, window, m_editorScale, std::move(scaleHooks));
 	window->installEventFilter(scaler);
 
+	// Reopen where the user left the window last time, and never let it start out partly outside the
+	// workspace: there are no scroll bars, so a window that sticks out cannot be reached.
+	if (m_editorPosValid) { window->move(m_editorPos); }
+	vst3editor::keepOnScreen(window);
+
 	// See EditorHostCursorFilter's comment: host is a native HWND sitting
 	// right at the SubWindow's top resize margin. Installed on host, not
 	// window, since it needs QEvent::Enter for host itself.
@@ -387,6 +406,7 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 	// Re-apply the scale the user picked earlier (nothing happens at 100%). After attach, so the view
 	// is fully set up when it is asked to resize.
 	scaler->applyInitial();
+	vst3editor::keepOnScreen(window);
 
 	// If the user closes the window with its own close button, detach the
 	// plugin view first.
@@ -396,6 +416,8 @@ void Vst3EffectControlDialog::openEditorWindow(bool userInitiated)
 	}));
 
 	window->show();
+	window->raise();
+	window->activateWindow();
 	m_editorButton->setText(tr("Hide editor"));
 }
 
@@ -416,6 +438,12 @@ void Vst3EffectControlDialog::closeEditorWindow()
 	{
 		// deleteLater(): this may be running inside the window's own
 		// close event, so it must not be deleted synchronously.
+		// Remember where the user put it, so reopening the editor puts it back there.
+		if (!m_editorWindow->isDetached() && !m_editorWindow->isMinimized() && !m_editorWindow->isMaximized())
+		{
+			m_editorPos = m_editorWindow->pos();
+			m_editorPosValid = true;
+		}
 		m_editorWindow->hide();
 		m_editorWindow->deleteLater();
 		m_editorWindow.clear();

@@ -75,6 +75,34 @@ inline float fitScale(const QSize& hostSize, float currentScale, const QSize& ch
     return static_cast<float>(std::max(static_cast<double>(kMinScale), s));
 }
 
+/// True when the editor window is minimized.  A detached editor is the host
+/// widget itself, so there the state lives on the host, not on the SubWindow.
+inline bool isEditorMinimized(const SubWindow* window, const QWidget* host)
+{
+    if (!window) { return false; }
+    return window->isDetached() ? (host && host->isMinimized()) : window->isMinimized();
+}
+
+/// Moves an attached editor window so that its title bar, and as much of the
+/// editor as fits, are inside the workspace.  The workspace has no scroll
+/// bars, so a window that sticks out past an edge (a big editor, or a position
+/// remembered from a larger screen) can no longer be reached to move, scale or
+/// close it.  A window larger than the workspace is pinned to the top-left
+/// corner, which keeps its title bar and the start of the editor visible.
+inline void keepOnScreen(SubWindow* window)
+{
+    if (!window || window->isDetached() || window->isMinimized() || window->isMaximized()) { return; }
+
+    const QMdiArea* area = window->mdiArea();
+    if (!area) { return; }
+
+    const QSize view = area->viewport()->size();
+    const int maxX = std::max(0, view.width()  - window->width());
+    const int maxY = std::max(0, view.height() - window->height());
+    const QPoint target(std::clamp(window->x(), 0, maxX), std::clamp(window->y(), 0, maxY));
+    if (target != window->pos()) { window->move(target); }
+}
+
 /// Event filter for the editor's SubWindow: right-clicking the title bar or
 /// the frame (anything that is not the plugin's own native window) opens a
 /// menu to scale the editor down.  Scaling uses the VST3
@@ -136,6 +164,7 @@ public:
         {
             m_host->setFixedSize(m_hooks.toWidget(w, h));
             if (m_window) { m_window->adjustSize(); }
+            keepOnScreen(m_window);
         }
         if (m_hooks.resync) { m_hooks.resync(); }
         return true;
