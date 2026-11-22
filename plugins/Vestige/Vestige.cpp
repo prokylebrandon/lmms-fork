@@ -132,6 +132,11 @@ public:
 			auto newSubWindow = std::make_unique<gui::vstSubWin>(gui::getGUI()->mainWindow()->workspace());
 			VstPlugin::createUI( newSubWindow.get() );
 			// no editor widget was created: do not keep an empty gray sub window
+if ( pluginWidget() )
+{
+newSubWindow->setWidget( pluginWidget() );
+m_pluginSubWindow = std::move( newSubWindow );
+}
 		} else {
 			VstPlugin::createUI( nullptr );
 		}
